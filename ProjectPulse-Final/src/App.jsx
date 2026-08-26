@@ -61,9 +61,11 @@ const MODULES = [
 const FLOW_URL_DIRECT =
   "https://93cd50265ecdea7aa4fd295cb67b42.d4.environment.api.powerplatform.com:443/powerautomate/automations/direct/cu/22/workflows/fa6a24a2ca4b4db498b9eb939349553a/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=YBkFBfYF1FPY_DHWRI0JSpXmHw0ST46XX93XUHeXvwc";
 
-// If a Vite dev proxy at "/flow" is configured, use that (avoids CORS locally).
-// Otherwise falls back to calling the flow URL directly.
-const FLOW_URL = import.meta.env.DEV ? "/flow" : FLOW_URL_DIRECT;
+// The app always calls the relative "/flow" path. In dev, Vite's
+// proxy (vite.config.js) forwards it. In production on Netlify,
+// a redirect rule in netlify.toml does the same job — so no code
+// branching is needed between environments.
+const FLOW_URL = "/flow";
 
 function callDepartmentFlow(action, department) {
   const body =
