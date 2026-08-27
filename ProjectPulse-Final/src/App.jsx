@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
-  LayoutDashboard, ChevronDown, LogOut, Search, Plus, Pencil,
+  LayoutDashboard, ChevronDown, LogOut, Search, Plus, Pencil, Trash2,
   X, Building2, Layers, Globe2, User, Handshake, CheckCircle2,
   CalendarClock, Briefcase, Contact, Shield, Receipt, UserCog, Flag,
   Loader2, RefreshCw, AlertCircle, TrendingUp, Users2, FolderKanban,
-  ClipboardList
+  ClipboardList, MapPin
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -30,7 +30,14 @@ const COLORS = {
   success: "#1B9C6E",
   successSoft: "#E6F6EF",
   danger: "#D6483E",
+  dangerSoft: "#FBE9E7",
 };
+
+/* ============================================================
+   HARD-CODED DEMO CREDENTIALS
+   ============================================================ */
+const DEMO_USERNAME = "ProjectPulse";
+const DEMO_PASSWORD = "Devoir@123";
 
 /* ============================================================
    MODULE REGISTRY — mirrors the Power Apps left nav exactly
@@ -38,7 +45,7 @@ const COLORS = {
 const MODULES = [
   { key: "department", label: "Department", icon: Building2, color: "#3B6FE0", implemented: true },
   { key: "project-category", label: "Project Category", icon: Layers, color: "#8B5CF6" },
-  { key: "country", label: "Country", icon: Globe2, color: "#0EA5A4" },
+  { key: "country", label: "Country", icon: Globe2, color: "#0EA5A4", implemented: true },
   { key: "user", label: "User", icon: User, color: "#3B6FE0" },
   { key: "project-deal-status", label: "Project Deal Status", icon: Handshake, color: "#22A06B" },
   { key: "approval-status", label: "Approval Status", icon: CheckCircle2, color: "#F59E0B" },
@@ -57,6 +64,38 @@ const MODULES = [
    proxy path "/flow" (see vite.config.js) to avoid CORS; in
    production point this at your own proxy/Azure Function that
    forwards to the URL below.
+
+   Schema: every call now sends a body matching this exact JSON
+   schema (paste into the flow trigger's "Request Body JSON Schema"
+   so Power Automate generates typed dynamic content for each field):
+
+   {
+     "type": "object",
+     "properties": {
+       "guid":   { "type": "string" },
+       "action": { "type": "string" },
+       "code":   { "type": "string" },
+       "name":   { "type": "string" },
+       "active": { "type": "boolean" }
+     }
+   }
+
+     - "guid"   -> the Dataverse record's unique identifier (the GUID
+                   column, shown as "Department" in your table view —
+                   e.g. b24161a3-f5a1-f111-b8de-6045bdce3fdc). Empty
+                   string on CREATE/LIST since Dataverse generates it;
+                   required on EDIT/DELETE so the flow's Update a
+                   row / Delete a row steps know exactly which record
+                   to target (use "Row ID" = triggerBody()?['guid']).
+     - "action" -> "LIST" | "CREATE" | "EDIT" | "DELETE". Switch on
+                   triggerBody()?['action'] to branch into the right
+                   Dataverse step:
+                     LIST   -> skip Create/Update/Delete, just return rows
+                     CREATE -> Add a new row, then return the refreshed list
+                     EDIT   -> Update a row (by guid), then return the list
+                     DELETE -> Delete a row (by guid), then return the list
+     - "code" / "name" / "active" -> the Department Code, Department
+                   Name and Status field values for Create/Edit.
    ============================================================ */
 const FLOW_URL_DIRECT =
   "https://93cd50265ecdea7aa4fd295cb67b42.d4.environment.api.powerplatform.com:443/powerautomate/automations/direct/cu/22/workflows/fa6a24a2ca4b4db498b9eb939349553a/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=YBkFBfYF1FPY_DHWRI0JSpXmHw0ST46XX93XUHeXvwc";
@@ -67,11 +106,18 @@ const FLOW_URL_DIRECT =
 // branching is needed between environments.
 const FLOW_URL = "/flow";
 
-function callDepartmentFlow(action, department) {
-  const body =
-    action === "upsert"
-      ? { code: department.code, name: department.name, active: !!department.active }
-      : {}; // "list": empty body — the flow should skip Update a row and just return the list
+function callDepartmentFlow(action, department = {}) {
+  // action: "LIST" | "CREATE" | "EDIT" | "DELETE"
+  // Body always matches the fixed schema — guid/code/name/active are
+  // sent every time (empty string / false when not relevant to this
+  // action) so the flow's trigger schema never has to guess a shape.
+  const body = {
+    guid: department.guid || "",
+    action,
+    code: department.code || "",
+    name: department.name || "",
+    active: !!department.active,
+  };
 
   return fetch(FLOW_URL, {
     method: "POST",
@@ -87,12 +133,20 @@ function callDepartmentFlow(action, department) {
     // Your flow's Select step returns fields named "Department Code",
     // "Department Name", "Status" — normalize those into the grid's shape.
     const list = Array.isArray(json) ? json : (json.body || json.data || json.value || []);
-    const normalized = list.map((d, i) => ({
-      id: d["Department Code"] ?? d.code ?? String(i),
-      code: d["Department Code"] ?? d.code ?? "",
-      name: d["Department Name"] ?? d.name ?? "",
-      active: !!(d["Status"] ?? d.active ?? false),
-    }));
+    const normalized = list.map((d, i) => {
+      // "Department" is the column header Dataverse shows for the
+      // record's GUID in your table view — fall back through a few
+      // likely names in case your flow's Select step labels it
+      // differently (guid / DepartmentId / id).
+      const guid = d.guid ?? d["Department"] ?? d["DepartmentId"] ?? d.id ?? "";
+      return {
+        id: guid || d["Department Code"] || String(i),
+        guid,
+        code: d["Department Code"] ?? d.code ?? "",
+        name: d["Department Name"] ?? d.name ?? "",
+        active: !!(d["Status"] ?? d.active ?? false),
+      };
+    });
     return { success: true, data: normalized };
   });
 }
@@ -113,6 +167,23 @@ const approvalSplit = [
   { name: "Pending", value: 23, color: "#F59E0B" },
   { name: "Rejected", value: 15, color: COLORS.danger },
 ];
+
+/* Sample data for the Country module (static — not wired to a flow yet) */
+const countryRows = [
+  { id: "IN", code: "IN", name: "India", region: "APAC", projects: 54, active: true },
+  { id: "US", code: "US", name: "United States", region: "AMER", projects: 38, active: true },
+  { id: "GB", code: "GB", name: "United Kingdom", region: "EMEA", projects: 21, active: true },
+  { id: "DE", code: "DE", name: "Germany", region: "EMEA", projects: 14, active: true },
+  { id: "SG", code: "SG", name: "Singapore", region: "APAC", projects: 9, active: true },
+  { id: "AU", code: "AU", name: "Australia", region: "APAC", projects: 7, active: false },
+  { id: "CA", code: "CA", name: "Canada", region: "AMER", projects: 5, active: true },
+];
+const projectsByRegion = [
+  { name: "APAC", value: 70 },
+  { name: "EMEA", value: 35 },
+  { name: "AMER", value: 43 },
+];
+const regionSplitColors = [COLORS.accent, "#8B5CF6", "#0EA5A4"];
 
 /* ============================================================
    SHARED UI BITS
@@ -168,6 +239,10 @@ function LoginScreen({ onLogin }) {
       setError("Enter both username and password to continue.");
       return;
     }
+    if (username.trim() !== DEMO_USERNAME || password !== DEMO_PASSWORD) {
+      setError("Invalid username or password.");
+      return;
+    }
     setError("");
     setBusy(true);
     setTimeout(() => {
@@ -219,7 +294,7 @@ function LoginScreen({ onLogin }) {
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="e.g. administrator"
+              placeholder="e.g. ProjectPulse"
               style={inputStyle}
             />
             <label style={{ display: "block", fontSize: 13, fontWeight: 600, color: COLORS.text, margin: "16px 0 6px" }}>Password</label>
@@ -253,7 +328,7 @@ function LoginScreen({ onLogin }) {
               {busy ? "Signing in…" : "Sign in"}
             </button>
             <div style={{ marginTop: 14, fontSize: 12, color: COLORS.textMuted, textAlign: "center" }}>
-              Demo build — any username / password combination signs you in.
+              Demo build — sign in with <b>ProjectPulse</b> / <b>Devoir@123</b>.
             </div>
           </div>
         </div>
@@ -493,6 +568,47 @@ const cardTitle = { display: "flex", alignItems: "center", gap: 7, fontSize: 13.
 const linkBtn = { background: "none", border: "none", color: COLORS.accent, fontSize: 12.5, fontWeight: 600, cursor: "pointer" };
 
 /* ============================================================
+   CONFIRM MODAL (used for Delete)
+   ============================================================ */
+function ConfirmModal({ title, message, confirmLabel, busy, onCancel, onConfirm }) {
+  return (
+    <div style={{
+      position: "fixed", inset: 0, background: "rgba(15,20,40,0.45)", zIndex: 50,
+      display: "flex", alignItems: "center", justifyContent: "center",
+    }}>
+      <div style={{ width: 380, background: COLORS.card, borderRadius: 14, padding: 22, boxShadow: "0 30px 70px rgba(0,0,0,0.35)" }}>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 12, marginBottom: 16 }}>
+          <span style={{ width: 36, height: 36, borderRadius: 9, background: COLORS.dangerSoft, color: COLORS.danger, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <AlertCircle size={18} />
+          </span>
+          <div>
+            <div style={{ fontWeight: 700, fontSize: 15, color: COLORS.text, marginBottom: 4 }}>{title}</div>
+            <div style={{ fontSize: 13, color: COLORS.textMuted, lineHeight: 1.5 }}>{message}</div>
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+          <button onClick={onCancel} style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", color: COLORS.text }}>
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={busy}
+            style={{
+              padding: "9px 18px", borderRadius: 8, border: "none", background: COLORS.danger, color: "#fff",
+              fontSize: 13, fontWeight: 700, cursor: busy ? "default" : "pointer", opacity: busy ? 0.75 : 1,
+              display: "flex", alignItems: "center", gap: 7,
+            }}
+          >
+            {busy && <Loader2 size={13} className="spin" />}
+            {busy ? "Deleting…" : confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
    DEPARTMENTS SCREEN (full CRUD wired to the mock flow)
    ============================================================ */
 function DepartmentsPage() {
@@ -503,10 +619,12 @@ function DepartmentsPage() {
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
   const [toast, setToast] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState(null); // null | department row
+  const [deleting, setDeleting] = useState(false);
 
   const refresh = useCallback(() => {
     setLoading(true);
-    callDepartmentFlow("list").then((res) => {
+    callDepartmentFlow("LIST").then((res) => {
       setRows(res.data);
       setLoading(false);
     });
@@ -531,16 +649,33 @@ function DepartmentsPage() {
     }
     setSaving(true);
     setErr("");
-    callDepartmentFlow("upsert", form)
+    const action = form.guid ? "EDIT" : "CREATE";
+    callDepartmentFlow(action, form)
       .then((res) => {
         setRows(res.data); // flow returns the refreshed list — reflect it immediately
         setSaving(false);
         setPanel(null);
-        setToast(form.id ? "Department updated." : "Department added.");
+        setToast(form.guid ? "Department updated." : "Department added.");
       })
       .catch((e) => {
         setSaving(false);
         setErr(e.message);
+      });
+  };
+
+  const confirmDeleteRow = () => {
+    if (!confirmDelete) return;
+    setDeleting(true);
+    callDepartmentFlow("DELETE", confirmDelete)
+      .then((res) => {
+        setRows(res.data);
+        setDeleting(false);
+        setConfirmDelete(null);
+        setToast("Department deleted.");
+      })
+      .catch((e) => {
+        setDeleting(false);
+        setToast(`Delete failed: ${e.message}`);
       });
   };
 
@@ -553,7 +688,7 @@ function DepartmentsPage() {
             <div style={{ color: COLORS.textMuted, fontSize: 13.5 }}>Add, edit and manage Departments</div>
           </div>
           <button
-            onClick={() => setPanel({ mode: "add", data: { code: "", name: "", active: true } })}
+            onClick={() => setPanel({ mode: "add", data: { guid: "", code: "", name: "", active: true } })}
             style={{
               display: "flex", alignItems: "center", gap: 7, background: COLORS.accent, color: "#fff", border: "none",
               borderRadius: 9, padding: "10px 16px", fontSize: 13.5, fontWeight: 700, cursor: "pointer",
@@ -603,12 +738,20 @@ function DepartmentsPage() {
                   <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text }}>{d.name}</td>
                   <td style={{ padding: "11px 16px" }}><StatusBadge active={d.active} /></td>
                   <td style={{ padding: "11px 16px", textAlign: "right" }}>
-                    <button
-                      onClick={() => setPanel({ mode: "edit", data: { ...d } })}
-                      style={{ display: "inline-flex", alignItems: "center", gap: 6, background: COLORS.accentSoft, color: COLORS.accent, border: "none", borderRadius: 7, padding: "6px 11px", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}
-                    >
-                      <Pencil size={12} /> Edit
-                    </button>
+                    <div style={{ display: "inline-flex", gap: 8 }}>
+                      <button
+                        onClick={() => setPanel({ mode: "edit", data: { ...d } })}
+                        style={{ display: "inline-flex", alignItems: "center", gap: 6, background: COLORS.accentSoft, color: COLORS.accent, border: "none", borderRadius: 7, padding: "6px 11px", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}
+                      >
+                        <Pencil size={12} /> Edit
+                      </button>
+                      <button
+                        onClick={() => setConfirmDelete(d)}
+                        style={{ display: "inline-flex", alignItems: "center", gap: 6, background: COLORS.dangerSoft, color: COLORS.danger, border: "none", borderRadius: 7, padding: "6px 11px", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}
+                      >
+                        <Trash2 size={12} /> Delete
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -625,6 +768,17 @@ function DepartmentsPage() {
           error={err}
           onCancel={() => { setPanel(null); setErr(""); }}
           onSubmit={submitPanel}
+        />
+      )}
+
+      {confirmDelete && (
+        <ConfirmModal
+          title="Delete this department?"
+          message={`"${confirmDelete.name}" (${confirmDelete.code}) will be permanently removed from Dataverse. This can't be undone.`}
+          confirmLabel="Delete"
+          busy={deleting}
+          onCancel={() => setConfirmDelete(null)}
+          onConfirm={confirmDeleteRow}
         />
       )}
 
@@ -721,6 +875,286 @@ function DepartmentPanel({ mode, data, saving, error, onCancel, onSubmit }) {
 const labelStyle = { display: "block", fontSize: 12.5, fontWeight: 700, color: COLORS.text, marginBottom: 6 };
 
 /* ============================================================
+   COUNTRY SCREEN — mini dashboard built on sample data
+   (not wired to a Power Automate flow yet — static rows/charts,
+   ready to swap in a callCountryFlow() the same way Departments
+   works once that flow exists)
+   ============================================================ */
+function CountryPage() {
+  // Dummy/local CRUD only — no Power Automate flow wired up for
+  // Country yet. New countries live in this component's state for
+  // the current session; refreshing the page resets to the sample
+  // rows. Swap in a callCountryFlow() the same way Departments works
+  // once that flow exists, and this becomes a real LIST/CREATE call.
+  const [rows, setRows] = useState(countryRows);
+  const [search, setSearch] = useState("");
+  const [panel, setPanel] = useState(null); // null | { data }
+  const [toast, setToast] = useState("");
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(""), 2600);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  const filtered = rows.filter((r) =>
+    (r.code || "").toLowerCase().includes(search.toLowerCase()) || (r.name || "").toLowerCase().includes(search.toLowerCase())
+  );
+  const totalProjects = rows.reduce((sum, r) => sum + (Number(r.projects) || 0), 0);
+  const activeCount = rows.filter((r) => r.active).length;
+  const regionCount = new Set(rows.map((r) => r.region)).size;
+
+  const kpis = [
+    { label: "Countries", value: String(rows.length), icon: Globe2, color: "#0EA5A4" },
+    { label: "Active Countries", value: String(activeCount), icon: CheckCircle2, color: COLORS.success },
+    { label: "Total Projects", value: String(totalProjects), icon: FolderKanban, color: COLORS.accent },
+    { label: "Regions Covered", value: String(regionCount), icon: MapPin, color: "#8B5CF6" },
+  ];
+
+  const submitCountry = (form) => {
+    if (!form.code?.trim() || !form.name?.trim()) return;
+    const code = form.code.trim().toUpperCase();
+    if (rows.some((r) => r.code === code)) {
+      setToast(`A country with code "${code}" already exists.`);
+      return;
+    }
+    setRows((prev) => [
+      ...prev,
+      {
+        id: code,
+        code,
+        name: form.name.trim(),
+        region: form.region?.trim() || "Other",
+        projects: Number(form.projects) || 0,
+        active: !!form.active,
+      },
+    ]);
+    setPanel(null);
+    setToast("Country added (dummy — session only, not saved to Dataverse yet).");
+  };
+
+  return (
+    <div style={{ flex: 1, display: "flex", overflow: "hidden", position: "relative" }}>
+      <div style={{ flex: 1, padding: 26, overflowY: "auto" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 18 }}>
+          <div>
+            <div style={{ fontFamily: "Sora, sans-serif", fontSize: 20, fontWeight: 700, color: COLORS.text }}>Country Master</div>
+            <div style={{ color: COLORS.textMuted, fontSize: 13.5 }}>Snapshot of countries and project distribution (sample data)</div>
+          </div>
+          <button
+            onClick={() => setPanel({ data: { code: "", name: "", region: "", projects: "", active: true } })}
+            style={{
+              display: "flex", alignItems: "center", gap: 7, background: COLORS.accent, color: "#fff", border: "none",
+              borderRadius: 9, padding: "10px 16px", fontSize: 13.5, fontWeight: 700, cursor: "pointer",
+            }}
+          >
+            <Plus size={15} /> Add Country
+          </button>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 14, marginBottom: 16 }}>
+          {kpis.map((k) => {
+            const Icon = k.icon;
+            return (
+              <div key={k.label} style={cardStyle}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <span style={{ color: COLORS.textMuted, fontSize: 12.5, fontWeight: 600 }}>{k.label}</span>
+                  <span style={{ width: 30, height: 30, borderRadius: 8, background: `${k.color}1F`, color: k.color, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <Icon size={15} />
+                  </span>
+                </div>
+                <div style={{ fontFamily: "Sora, sans-serif", fontSize: 26, fontWeight: 700, color: COLORS.text, marginTop: 10 }}>{k.value}</div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 14, marginBottom: 16 }}>
+          <div style={cardStyle}>
+            <div style={cardTitle}><Globe2 size={14} /> Projects by Country</div>
+            <ResponsiveContainer width="100%" height={220}>
+              <BarChart data={rows}>
+                <CartesianGrid stroke={COLORS.border} vertical={false} />
+                <XAxis dataKey="code" tick={{ fontSize: 12, fill: COLORS.textMuted }} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fontSize: 12, fill: COLORS.textMuted }} axisLine={false} tickLine={false} />
+                <Tooltip />
+                <Bar dataKey="projects" fill="#0EA5A4" radius={[6, 6, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+          <div style={cardStyle}>
+            <div style={cardTitle}><MapPin size={14} /> Project Split by Region</div>
+            <ResponsiveContainer width="100%" height={220}>
+              <PieChart>
+                <Pie data={projectsByRegion} dataKey="value" nameKey="name" innerRadius={50} outerRadius={78} paddingAngle={3}>
+                  {projectsByRegion.map((s, i) => <Cell key={s.name} fill={regionSplitColors[i % regionSplitColors.length]} />)}
+                </Pie>
+                <Legend iconType="circle" wrapperStyle={{ fontSize: 12 }} />
+                <Tooltip />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        <div style={{ ...cardStyle, padding: 0, overflow: "hidden" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 16px", borderBottom: `1px solid ${COLORS.border}` }}>
+            <div style={{ fontWeight: 700, fontSize: 14, color: COLORS.text }}>Countries <span style={{ color: COLORS.textMuted, fontWeight: 500 }}>({filtered.length})</span></div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "7px 11px", width: 260 }}>
+              <Search size={14} color={COLORS.textMuted} />
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search by code or name"
+                style={{ border: "none", outline: "none", fontSize: 13, width: "100%", fontFamily: "Inter, sans-serif" }}
+              />
+            </div>
+          </div>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ background: COLORS.bg }}>
+                {["Code", "Country", "Region", "Projects", "Status"].map((h) => (
+                  <th key={h} style={{ textAlign: "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.length === 0 ? (
+                <tr><td colSpan={5} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>No countries match your search.</td></tr>
+              ) : filtered.map((c, i) => (
+                <tr key={c.id} style={{ borderTop: `1px solid ${COLORS.border}`, background: i % 2 ? "#FAFBFD" : "#fff" }}>
+                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text, fontWeight: 600 }}>{c.code}</td>
+                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text }}>{c.name}</td>
+                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.textMuted }}>{c.region}</td>
+                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text }}>{c.projects}</td>
+                  <td style={{ padding: "11px 16px" }}><StatusBadge active={c.active} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {panel && (
+        <CountryPanel
+          data={panel.data}
+          onCancel={() => setPanel(null)}
+          onSubmit={submitCountry}
+        />
+      )}
+
+      {toast && (
+        <div style={{
+          position: "absolute", bottom: 22, left: "50%", transform: "translateX(-50%)",
+          background: COLORS.text, color: "#fff", padding: "10px 18px", borderRadius: 9, fontSize: 13, fontWeight: 600,
+          display: "flex", alignItems: "center", gap: 8, boxShadow: "0 12px 30px rgba(0,0,0,0.2)",
+        }}>
+          <CheckCircle2 size={15} color={COLORS.success} /> {toast}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CountryPanel({ data, onCancel, onSubmit }) {
+  const [form, setForm] = useState(data);
+  const [error, setError] = useState("");
+
+  const submit = () => {
+    if (!form.code?.trim() || !form.name?.trim()) {
+      setError("Country Code and Name are required.");
+      return;
+    }
+    setError("");
+    onSubmit(form);
+  };
+
+  return (
+    <div style={{
+      width: 340, background: COLORS.card, borderLeft: `1px solid ${COLORS.border}`, flexShrink: 0,
+      display: "flex", flexDirection: "column", boxShadow: "-8px 0 30px rgba(15,20,40,0.06)",
+    }}>
+      <div style={{ padding: "18px 20px", borderBottom: `1px solid ${COLORS.border}`, display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 15, color: COLORS.text }}>Add New Country</div>
+          <div style={{ fontSize: 12, color: COLORS.accent, marginTop: 2 }}>Dummy entry — kept in this session only</div>
+        </div>
+        <button onClick={onCancel} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.textMuted }}><X size={18} /></button>
+      </div>
+
+      <div style={{ padding: 20, flex: 1, overflowY: "auto" }}>
+        <label style={labelStyle}>Country Code*</label>
+        <input
+          value={form.code}
+          onChange={(e) => setForm({ ...form, code: e.target.value })}
+          placeholder="e.g. FR"
+          style={inputStyle}
+        />
+        <label style={{ ...labelStyle, marginTop: 16 }}>Country Name*</label>
+        <input
+          value={form.name}
+          onChange={(e) => setForm({ ...form, name: e.target.value })}
+          placeholder="e.g. France"
+          style={inputStyle}
+        />
+        <label style={{ ...labelStyle, marginTop: 16 }}>Region</label>
+        <input
+          value={form.region}
+          onChange={(e) => setForm({ ...form, region: e.target.value })}
+          placeholder="e.g. EMEA"
+          style={inputStyle}
+        />
+        <label style={{ ...labelStyle, marginTop: 16 }}>Projects</label>
+        <input
+          type="number"
+          min="0"
+          value={form.projects}
+          onChange={(e) => setForm({ ...form, projects: e.target.value })}
+          placeholder="0"
+          style={inputStyle}
+        />
+
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 20, padding: "12px 14px", border: `1px solid ${COLORS.border}`, borderRadius: 10 }}>
+          <span style={{ fontSize: 13.5, fontWeight: 600, color: COLORS.text }}>Active</span>
+          <div
+            onClick={() => setForm({ ...form, active: !form.active })}
+            style={{
+              width: 40, height: 22, borderRadius: 999, background: form.active ? COLORS.accent : "#D7DCE6",
+              position: "relative", cursor: "pointer", transition: "background 0.15s",
+            }}
+          >
+            <div style={{
+              width: 18, height: 18, borderRadius: "50%", background: "#fff", position: "absolute", top: 2,
+              left: form.active ? 20 : 2, transition: "left 0.15s", boxShadow: "0 1px 3px rgba(0,0,0,0.25)",
+            }} />
+          </div>
+        </div>
+
+        {error && (
+          <div style={{ display: "flex", gap: 8, alignItems: "center", color: COLORS.danger, fontSize: 12.5, marginTop: 16 }}>
+            <AlertCircle size={14} /> {error}
+          </div>
+        )}
+      </div>
+
+      <div style={{ padding: 16, borderTop: `1px solid ${COLORS.border}`, display: "flex", gap: 10, justifyContent: "flex-end" }}>
+        <button onClick={onCancel} style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", color: COLORS.text }}>
+          Cancel
+        </button>
+        <button
+          onClick={submit}
+          style={{
+            padding: "9px 18px", borderRadius: 8, border: "none", background: COLORS.accent, color: "#fff",
+            fontSize: 13, fontWeight: 700, cursor: "pointer",
+          }}
+        >
+          Add Country
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
    GENERIC STUB PAGE for not-yet-built modules
    ============================================================ */
 function ModuleStub({ moduleKey }) {
@@ -797,7 +1231,8 @@ function ProjectPulseApp() {
         {inModuleShell && <ModuleSidebar current={page} onSelect={setPage} />}
         {page === "dashboard" && <DashboardHome onOpenModule={setPage} />}
         {page === "department" && <DepartmentsPage />}
-        {inModuleShell && page !== "department" && <ModuleStub moduleKey={page} />}
+        {page === "country" && <CountryPage />}
+        {inModuleShell && page !== "department" && page !== "country" && <ModuleStub moduleKey={page} />}
       </div>
       <style>{`.spin { animation: spin 0.8s linear infinite; } @keyframes spin { to { transform: rotate(360deg); } } * { box-sizing: border-box; }`}</style>
     </div>
