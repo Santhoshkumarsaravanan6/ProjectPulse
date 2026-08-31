@@ -4,7 +4,7 @@ import {
   X, Building2, Layers, Globe2, User, Handshake, CheckCircle2,
   CalendarClock, Briefcase, Contact, Shield, Receipt, UserCog, Flag,
   Loader2, RefreshCw, AlertCircle, TrendingUp, Users2, FolderKanban,
-  ClipboardList, MapPin
+  ClipboardList
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -65,14 +65,17 @@ const MODULES = [
    production point this at your own proxy/Azure Function that
    forwards to the URL below.
 
-   Schema: every call now sends a body matching this exact JSON
-   schema (paste into the flow trigger's "Request Body JSON Schema"
-   so Power Automate generates typed dynamic content for each field):
+   Schema: ONE flow now serves every master-data module (Department,
+   Country, and future ones) via an "entity" switch, since they all
+   share the same shape (code / name / active). Paste this into the
+   flow trigger's "Request Body JSON Schema" so Power Automate
+   generates typed dynamic content for each field:
 
    {
      "type": "object",
      "properties": {
-       "guid":   { "type": "string" },
+       "entity": { "type": "string" },
+       "guid":   { "type": "integer" },
        "action": { "type": "string" },
        "code":   { "type": "string" },
        "name":   { "type": "string" },
@@ -80,22 +83,40 @@ const MODULES = [
      }
    }
 
-     - "guid"   -> the Dataverse record's unique identifier (the GUID
-                   column, shown as "Department" in your table view —
-                   e.g. b24161a3-f5a1-f111-b8de-6045bdce3fdc). Empty
-                   string on CREATE/LIST since Dataverse generates it;
-                   required on EDIT/DELETE so the flow's Update a
-                   row / Delete a row steps know exactly which record
-                   to target (use "Row ID" = triggerBody()?['guid']).
-     - "action" -> "LIST" | "CREATE" | "EDIT" | "DELETE". Switch on
-                   triggerBody()?['action'] to branch into the right
-                   Dataverse step:
+     - "entity" -> "Department" | "Country" (add more as new modules
+                   come online). Switch on triggerBody()?['entity']
+                   at the top of the flow to route into the right
+                   table's branch (Department table vs Country table).
+     - "guid"   -> the SQL row's identity/primary key column (an
+                   integer, e.g. 1, 2, 3 — despite the name, this is
+                   NOT a Dataverse GUID for this source, it's a plain
+                   int identity column: DepartmentId / CountryId). 0
+                   on CREATE/LIST since the database generates it;
+                   required on EDIT/DELETE so the flow's Update row /
+                   Delete row steps know exactly which record to
+                   target (use "Id" = triggerBody()?['guid']).
+     - "action" -> "LIST" | "CREATE" | "EDIT" | "DELETE". Nest this
+                   switch inside each entity branch:
                      LIST   -> skip Create/Update/Delete, just return rows
-                     CREATE -> Add a new row, then return the refreshed list
+                     CREATE -> Insert a new row, then return the refreshed list
                      EDIT   -> Update a row (by guid), then return the list
                      DELETE -> Delete a row (by guid), then return the list
-     - "code" / "name" / "active" -> the Department Code, Department
-                   Name and Status field values for Create/Edit.
+     - "code" / "name" / "active" -> maps to:
+                   Department -> Department Code / Department Name / Status
+                   Country    -> CountryCode / CountryName / IsActive
+
+   Flow response shape (as actually returned, per entity):
+   {
+     "body": [
+       { "Department Code": "A01", "Department Name": "Power Automate", "Status": false, "guid": 1 },
+       { "Department Code": "test", "Department Name": "test", "Status": true, "guid": 2 }
+     ]
+   }
+   {
+     "body": [
+       { "CountryCode": "IN", "CountryName": "India", "IsActive": true, "guid": 1 }
+     ]
+   }
    ============================================================ */
 const FLOW_URL_DIRECT =
   "https://93cd50265ecdea7aa4fd295cb67b42.d4.environment.api.powerplatform.com:443/powerautomate/automations/direct/cu/22/workflows/fa6a24a2ca4b4db498b9eb939349553a/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=YBkFBfYF1FPY_DHWRI0JSpXmHw0ST46XX93XUHeXvwc";
@@ -106,17 +127,33 @@ const FLOW_URL_DIRECT =
 // branching is needed between environments.
 const FLOW_URL = "/flow";
 
-function callDepartmentFlow(action, department = {}) {
+// Field-name maps so the one generic function can normalize either
+// entity's SQL column names into the same { code, name, active } shape
+// the grids/panels use.
+const ENTITY_FIELD_MAP = {
+  Department: { codeCol: "Department Code", nameCol: "Department Name", activeCol: "Status" },
+  Country: { codeCol: "CountryCode", nameCol: "CountryName", activeCol: "IsActive" },
+};
+
+function callMasterDataFlow(entity, action, item = {}) {
+  // entity: "Department" | "Country" — routes to the right table inside
+  //         the single shared flow.
   // action: "LIST" | "CREATE" | "EDIT" | "DELETE"
-  // Body always matches the fixed schema — guid/code/name/active are
-  // sent every time (empty string / false when not relevant to this
-  // action) so the flow's trigger schema never has to guess a shape.
+  // "guid" is a plain integer identity column (DepartmentId / CountryId),
+  // not a string GUID — 0 means "no id yet" (CREATE/LIST), and a real
+  // positive integer is sent for EDIT/DELETE.
+  const guidValue =
+    item.guid === "" || item.guid === null || item.guid === undefined
+      ? 0
+      : Number(item.guid);
+
   const body = {
-    guid: department.guid || "",
+    entity,
+    guid: guidValue,
     action,
-    code: department.code || "",
-    name: department.name || "",
-    active: !!department.active,
+    code: item.code || "",
+    name: item.name || "",
+    active: !!item.active,
   };
 
   return fetch(FLOW_URL, {
@@ -129,27 +166,32 @@ function callDepartmentFlow(action, department = {}) {
       throw new Error(`Flow returned ${res.status}${text ? `: ${text.slice(0, 200)}` : ""}`);
     }
     const json = await res.json();
-    console.log("Flow raw response:", json); // TEMP: check DevTools console to confirm shape
-    // Your flow's Select step returns fields named "Department Code",
-    // "Department Name", "Status" — normalize those into the grid's shape.
+    console.log(`Flow raw response [${entity}]:`, json); // TEMP: check DevTools console to confirm shape
+    // The flow's Select step returns entity-specific column names
+    // ("Department Code" vs "CountryCode", etc.) plus a shared "guid"
+    // (a plain integer identity) — normalize both shapes the same way.
+    const { codeCol, nameCol, activeCol } = ENTITY_FIELD_MAP[entity];
     const list = Array.isArray(json) ? json : (json.body || json.data || json.value || []);
     const normalized = list.map((d, i) => {
-      // "Department" is the column header Dataverse shows for the
-      // record's GUID in your table view — fall back through a few
-      // likely names in case your flow's Select step labels it
-      // differently (guid / DepartmentId / id).
-      const guid = d.guid ?? d["Department"] ?? d["DepartmentId"] ?? d.id ?? "";
+      const rawGuid = d.guid ?? d.id;
+      const guid = rawGuid !== undefined && rawGuid !== null && rawGuid !== "" ? Number(rawGuid) : "";
       return {
-        id: guid || d["Department Code"] || String(i),
+        id: guid !== "" ? guid : (d[codeCol] || String(i)),
         guid,
-        code: d["Department Code"] ?? d.code ?? "",
-        name: d["Department Name"] ?? d.name ?? "",
-        active: !!(d["Status"] ?? d.active ?? false),
+        code: d[codeCol] ?? d.code ?? "",
+        name: d[nameCol] ?? d.name ?? "",
+        active: !!(d[activeCol] ?? d.active ?? false),
       };
     });
     return { success: true, data: normalized };
   });
 }
+
+// Thin, named wrappers — keeps call sites in each page readable
+// (callDepartmentFlow("LIST") reads better than the raw entity string
+// scattered everywhere) while both funnel through the one flow call.
+const callDepartmentFlow = (action, department) => callMasterDataFlow("Department", action, department);
+const callCountryFlow = (action, country) => callMasterDataFlow("Country", action, country);
 
 /* ============================================================
    SAMPLE DASHBOARD DATA
@@ -168,22 +210,14 @@ const approvalSplit = [
   { name: "Rejected", value: 15, color: COLORS.danger },
 ];
 
-/* Sample data for the Country module (static — not wired to a flow yet) */
-const countryRows = [
-  { id: "IN", code: "IN", name: "India", region: "APAC", projects: 54, active: true },
-  { id: "US", code: "US", name: "United States", region: "AMER", projects: 38, active: true },
-  { id: "GB", code: "GB", name: "United Kingdom", region: "EMEA", projects: 21, active: true },
-  { id: "DE", code: "DE", name: "Germany", region: "EMEA", projects: 14, active: true },
-  { id: "SG", code: "SG", name: "Singapore", region: "APAC", projects: 9, active: true },
-  { id: "AU", code: "AU", name: "Australia", region: "APAC", projects: 7, active: false },
-  { id: "CA", code: "CA", name: "Canada", region: "AMER", projects: 5, active: true },
+// Distinct, cycling palette for charts that color each bar/slice
+// individually (e.g. the Country-by-starting-letter distribution).
+const CHART_PALETTE = [
+  "#3B6FE0", "#8B5CF6", "#0EA5A4", "#F59E0B", "#22A06B",
+  "#E11D48", "#EAB308", "#06B6D4", "#A855F7", "#F43F5E",
 ];
-const projectsByRegion = [
-  { name: "APAC", value: 70 },
-  { name: "EMEA", value: 35 },
-  { name: "AMER", value: 43 },
-];
-const regionSplitColors = [COLORS.accent, "#8B5CF6", "#0EA5A4"];
+
+
 
 /* ============================================================
    SHARED UI BITS
@@ -875,21 +909,31 @@ function DepartmentPanel({ mode, data, saving, error, onCancel, onSubmit }) {
 const labelStyle = { display: "block", fontSize: 12.5, fontWeight: 700, color: COLORS.text, marginBottom: 6 };
 
 /* ============================================================
-   COUNTRY SCREEN — mini dashboard built on sample data
-   (not wired to a Power Automate flow yet — static rows/charts,
-   ready to swap in a callCountryFlow() the same way Departments
-   works once that flow exists)
+   COUNTRY SCREEN (full CRUD wired to the shared flow, entity="Country")
+   Mirrors DepartmentsPage exactly — same shape (code/name/active)
+   since the real Country table (CountryId/CountryCode/CountryName/
+   IsActive) matches Department's structure.
    ============================================================ */
 function CountryPage() {
-  // Dummy/local CRUD only — no Power Automate flow wired up for
-  // Country yet. New countries live in this component's state for
-  // the current session; refreshing the page resets to the sample
-  // rows. Swap in a callCountryFlow() the same way Departments works
-  // once that flow exists, and this becomes a real LIST/CREATE call.
-  const [rows, setRows] = useState(countryRows);
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
-  const [panel, setPanel] = useState(null); // null | { data }
+  const [panel, setPanel] = useState(null); // null | { mode: 'add'|'edit', data }
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
   const [toast, setToast] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState(null); // null | country row
+  const [deleting, setDeleting] = useState(false);
+
+  const refresh = useCallback(() => {
+    setLoading(true);
+    callCountryFlow("LIST").then((res) => {
+      setRows(res.data);
+      setLoading(false);
+    });
+  }, []);
+
+  useEffect(() => { refresh(); }, [refresh]);
 
   useEffect(() => {
     if (!toast) return;
@@ -900,37 +944,67 @@ function CountryPage() {
   const filtered = rows.filter((r) =>
     (r.code || "").toLowerCase().includes(search.toLowerCase()) || (r.name || "").toLowerCase().includes(search.toLowerCase())
   );
-  const totalProjects = rows.reduce((sum, r) => sum + (Number(r.projects) || 0), 0);
   const activeCount = rows.filter((r) => r.active).length;
-  const regionCount = new Set(rows.map((r) => r.region)).size;
 
   const kpis = [
     { label: "Countries", value: String(rows.length), icon: Globe2, color: "#0EA5A4" },
     { label: "Active Countries", value: String(activeCount), icon: CheckCircle2, color: COLORS.success },
-    { label: "Total Projects", value: String(totalProjects), icon: FolderKanban, color: COLORS.accent },
-    { label: "Regions Covered", value: String(regionCount), icon: MapPin, color: "#8B5CF6" },
+    { label: "Inactive Countries", value: String(rows.length - activeCount), icon: AlertCircle, color: COLORS.danger },
   ];
 
-  const submitCountry = (form) => {
-    if (!form.code?.trim() || !form.name?.trim()) return;
-    const code = form.code.trim().toUpperCase();
-    if (rows.some((r) => r.code === code)) {
-      setToast(`A country with code "${code}" already exists.`);
+  // Real analytics from the actual rows — the Country table has no
+  // region/projects columns, so (unlike the old dummy dashboard) this
+  // is limited to what's genuinely in the data: active/inactive split,
+  // plus a colorful distribution of countries by starting letter.
+  const activeSplit = [
+    { name: "Active", value: activeCount, color: COLORS.success },
+    { name: "Inactive", value: rows.length - activeCount, color: COLORS.danger },
+  ];
+
+  const letterCounts = {};
+  rows.forEach((r) => {
+    const letter = (r.name || "").trim().charAt(0).toUpperCase() || "#";
+    letterCounts[letter] = (letterCounts[letter] || 0) + 1;
+  });
+  const letterData = Object.entries(letterCounts)
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([letter, count]) => ({ letter, count }));
+
+  const submitPanel = (form) => {
+    if (!form.code?.trim() || !form.name?.trim()) {
+      setErr("Country Code and Name are required.");
       return;
     }
-    setRows((prev) => [
-      ...prev,
-      {
-        id: code,
-        code,
-        name: form.name.trim(),
-        region: form.region?.trim() || "Other",
-        projects: Number(form.projects) || 0,
-        active: !!form.active,
-      },
-    ]);
-    setPanel(null);
-    setToast("Country added (dummy — session only, not saved to Dataverse yet).");
+    setSaving(true);
+    setErr("");
+    const action = form.guid ? "EDIT" : "CREATE";
+    callCountryFlow(action, form)
+      .then((res) => {
+        setRows(res.data); // flow returns the refreshed list — reflect it immediately
+        setSaving(false);
+        setPanel(null);
+        setToast(form.guid ? "Country updated." : "Country added.");
+      })
+      .catch((e) => {
+        setSaving(false);
+        setErr(e.message);
+      });
+  };
+
+  const confirmDeleteRow = () => {
+    if (!confirmDelete) return;
+    setDeleting(true);
+    callCountryFlow("DELETE", confirmDelete)
+      .then((res) => {
+        setRows(res.data);
+        setDeleting(false);
+        setConfirmDelete(null);
+        setToast("Country deleted.");
+      })
+      .catch((e) => {
+        setDeleting(false);
+        setToast(`Delete failed: ${e.message}`);
+      });
   };
 
   return (
@@ -939,10 +1013,10 @@ function CountryPage() {
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 18 }}>
           <div>
             <div style={{ fontFamily: "Sora, sans-serif", fontSize: 20, fontWeight: 700, color: COLORS.text }}>Country Master</div>
-            <div style={{ color: COLORS.textMuted, fontSize: 13.5 }}>Snapshot of countries and project distribution (sample data)</div>
+            <div style={{ color: COLORS.textMuted, fontSize: 13.5 }}>Add, edit and manage Countries</div>
           </div>
           <button
-            onClick={() => setPanel({ data: { code: "", name: "", region: "", projects: "", active: true } })}
+            onClick={() => setPanel({ mode: "add", data: { guid: "", code: "", name: "", active: true } })}
             style={{
               display: "flex", alignItems: "center", gap: 7, background: COLORS.accent, color: "#fff", border: "none",
               borderRadius: 9, padding: "10px 16px", fontSize: 13.5, fontWeight: 700, cursor: "pointer",
@@ -969,64 +1043,94 @@ function CountryPage() {
           })}
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 14, marginBottom: 16 }}>
-          <div style={cardStyle}>
-            <div style={cardTitle}><Globe2 size={14} /> Projects by Country</div>
-            <ResponsiveContainer width="100%" height={220}>
-              <BarChart data={rows}>
-                <CartesianGrid stroke={COLORS.border} vertical={false} />
-                <XAxis dataKey="code" tick={{ fontSize: 12, fill: COLORS.textMuted }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fontSize: 12, fill: COLORS.textMuted }} axisLine={false} tickLine={false} />
-                <Tooltip />
-                <Bar dataKey="projects" fill="#0EA5A4" radius={[6, 6, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
+        {!loading && rows.length > 0 && (
+          <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 14, marginBottom: 16 }}>
+            <div style={cardStyle}>
+              <div style={cardTitle}><Globe2 size={14} /> Countries by Starting Letter</div>
+              <ResponsiveContainer width="100%" height={220}>
+                <BarChart data={letterData}>
+                  <CartesianGrid stroke={COLORS.border} vertical={false} />
+                  <XAxis dataKey="letter" tick={{ fontSize: 12, fill: COLORS.textMuted }} axisLine={false} tickLine={false} />
+                  <YAxis allowDecimals={false} tick={{ fontSize: 12, fill: COLORS.textMuted }} axisLine={false} tickLine={false} />
+                  <Tooltip />
+                  <Bar dataKey="count" radius={[6, 6, 0, 0]}>
+                    {letterData.map((entry, i) => (
+                      <Cell key={entry.letter} fill={CHART_PALETTE[i % CHART_PALETTE.length]} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+            <div style={cardStyle}>
+              <div style={cardTitle}><CheckCircle2 size={14} /> Active vs Inactive</div>
+              <ResponsiveContainer width="100%" height={220}>
+                <PieChart>
+                  <Pie data={activeSplit} dataKey="value" nameKey="name" innerRadius={50} outerRadius={78} paddingAngle={3}>
+                    {activeSplit.map((s) => <Cell key={s.name} fill={s.color} />)}
+                  </Pie>
+                  <Legend iconType="circle" wrapperStyle={{ fontSize: 12 }} />
+                  <Tooltip />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
           </div>
-          <div style={cardStyle}>
-            <div style={cardTitle}><MapPin size={14} /> Project Split by Region</div>
-            <ResponsiveContainer width="100%" height={220}>
-              <PieChart>
-                <Pie data={projectsByRegion} dataKey="value" nameKey="name" innerRadius={50} outerRadius={78} paddingAngle={3}>
-                  {projectsByRegion.map((s, i) => <Cell key={s.name} fill={regionSplitColors[i % regionSplitColors.length]} />)}
-                </Pie>
-                <Legend iconType="circle" wrapperStyle={{ fontSize: 12 }} />
-                <Tooltip />
-              </PieChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
+        )}
 
         <div style={{ ...cardStyle, padding: 0, overflow: "hidden" }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 16px", borderBottom: `1px solid ${COLORS.border}` }}>
             <div style={{ fontWeight: 700, fontSize: 14, color: COLORS.text }}>Countries <span style={{ color: COLORS.textMuted, fontWeight: 500 }}>({filtered.length})</span></div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "7px 11px", width: 260 }}>
-              <Search size={14} color={COLORS.textMuted} />
-              <input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search by code or name"
-                style={{ border: "none", outline: "none", fontSize: 13, width: "100%", fontFamily: "Inter, sans-serif" }}
-              />
+            <div style={{ display: "flex", gap: 10 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "7px 11px", width: 260 }}>
+                <Search size={14} color={COLORS.textMuted} />
+                <input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search by code or name"
+                  style={{ border: "none", outline: "none", fontSize: 13, width: "100%", fontFamily: "Inter, sans-serif" }}
+                />
+              </div>
+              <button onClick={refresh} style={{ display: "flex", alignItems: "center", gap: 6, border: `1px solid ${COLORS.border}`, background: "#fff", borderRadius: 8, padding: "0 12px", fontSize: 12.5, cursor: "pointer", color: COLORS.text }}>
+                <RefreshCw size={13} className={loading ? "spin" : ""} /> Refresh
+              </button>
             </div>
           </div>
+
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ background: COLORS.bg }}>
-                {["Code", "Country", "Region", "Projects", "Status"].map((h) => (
+                {["Country Code", "Country Name", "Status", ""].map((h) => (
                   <th key={h} style={{ textAlign: "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {filtered.length === 0 ? (
-                <tr><td colSpan={5} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>No countries match your search.</td></tr>
+              {loading ? (
+                <tr><td colSpan={4} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>
+                  <Loader2 size={18} className="spin" style={{ verticalAlign: "middle", marginRight: 8 }} /> Loading countries…
+                </td></tr>
+              ) : filtered.length === 0 ? (
+                <tr><td colSpan={4} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>No countries match your search.</td></tr>
               ) : filtered.map((c, i) => (
                 <tr key={c.id} style={{ borderTop: `1px solid ${COLORS.border}`, background: i % 2 ? "#FAFBFD" : "#fff" }}>
                   <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text, fontWeight: 600 }}>{c.code}</td>
                   <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text }}>{c.name}</td>
-                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.textMuted }}>{c.region}</td>
-                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text }}>{c.projects}</td>
                   <td style={{ padding: "11px 16px" }}><StatusBadge active={c.active} /></td>
+                  <td style={{ padding: "11px 16px", textAlign: "right" }}>
+                    <div style={{ display: "inline-flex", gap: 8 }}>
+                      <button
+                        onClick={() => setPanel({ mode: "edit", data: { ...c } })}
+                        style={{ display: "inline-flex", alignItems: "center", gap: 6, background: COLORS.accentSoft, color: COLORS.accent, border: "none", borderRadius: 7, padding: "6px 11px", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}
+                      >
+                        <Pencil size={12} /> Edit
+                      </button>
+                      <button
+                        onClick={() => setConfirmDelete(c)}
+                        style={{ display: "inline-flex", alignItems: "center", gap: 6, background: COLORS.dangerSoft, color: COLORS.danger, border: "none", borderRadius: 7, padding: "6px 11px", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}
+                      >
+                        <Trash2 size={12} /> Delete
+                      </button>
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -1036,9 +1140,23 @@ function CountryPage() {
 
       {panel && (
         <CountryPanel
+          mode={panel.mode}
           data={panel.data}
-          onCancel={() => setPanel(null)}
-          onSubmit={submitCountry}
+          saving={saving}
+          error={err}
+          onCancel={() => { setPanel(null); setErr(""); }}
+          onSubmit={submitPanel}
+        />
+      )}
+
+      {confirmDelete && (
+        <ConfirmModal
+          title="Delete this country?"
+          message={`"${confirmDelete.name}" (${confirmDelete.code}) will be permanently removed. This can't be undone.`}
+          confirmLabel="Delete"
+          busy={deleting}
+          onCancel={() => setConfirmDelete(null)}
+          onConfirm={confirmDeleteRow}
         />
       )}
 
@@ -1055,18 +1173,9 @@ function CountryPage() {
   );
 }
 
-function CountryPanel({ data, onCancel, onSubmit }) {
+function CountryPanel({ mode, data, saving, error, onCancel, onSubmit }) {
   const [form, setForm] = useState(data);
-  const [error, setError] = useState("");
-
-  const submit = () => {
-    if (!form.code?.trim() || !form.name?.trim()) {
-      setError("Country Code and Name are required.");
-      return;
-    }
-    setError("");
-    onSubmit(form);
-  };
+  useEffect(() => setForm(data), [data]);
 
   return (
     <div style={{
@@ -1075,8 +1184,8 @@ function CountryPanel({ data, onCancel, onSubmit }) {
     }}>
       <div style={{ padding: "18px 20px", borderBottom: `1px solid ${COLORS.border}`, display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
         <div>
-          <div style={{ fontWeight: 700, fontSize: 15, color: COLORS.text }}>Add New Country</div>
-          <div style={{ fontSize: 12, color: COLORS.accent, marginTop: 2 }}>Dummy entry — kept in this session only</div>
+          <div style={{ fontWeight: 700, fontSize: 15, color: COLORS.text }}>{mode === "add" ? "Add New Country" : "Edit Country"}</div>
+          <div style={{ fontSize: 12, color: COLORS.accent, marginTop: 2 }}>Fill all required fields below</div>
         </div>
         <button onClick={onCancel} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.textMuted }}><X size={18} /></button>
       </div>
@@ -1094,22 +1203,6 @@ function CountryPanel({ data, onCancel, onSubmit }) {
           value={form.name}
           onChange={(e) => setForm({ ...form, name: e.target.value })}
           placeholder="e.g. France"
-          style={inputStyle}
-        />
-        <label style={{ ...labelStyle, marginTop: 16 }}>Region</label>
-        <input
-          value={form.region}
-          onChange={(e) => setForm({ ...form, region: e.target.value })}
-          placeholder="e.g. EMEA"
-          style={inputStyle}
-        />
-        <label style={{ ...labelStyle, marginTop: 16 }}>Projects</label>
-        <input
-          type="number"
-          min="0"
-          value={form.projects}
-          onChange={(e) => setForm({ ...form, projects: e.target.value })}
-          placeholder="0"
           style={inputStyle}
         />
 
@@ -1141,13 +1234,16 @@ function CountryPanel({ data, onCancel, onSubmit }) {
           Cancel
         </button>
         <button
-          onClick={submit}
+          onClick={() => onSubmit(form)}
+          disabled={saving}
           style={{
             padding: "9px 18px", borderRadius: 8, border: "none", background: COLORS.accent, color: "#fff",
-            fontSize: 13, fontWeight: 700, cursor: "pointer",
+            fontSize: 13, fontWeight: 700, cursor: saving ? "default" : "pointer", opacity: saving ? 0.75 : 1,
+            display: "flex", alignItems: "center", gap: 7,
           }}
         >
-          Add Country
+          {saving && <Loader2 size={13} className="spin" />}
+          {saving ? "Saving…" : "Submit"}
         </button>
       </div>
     </div>
@@ -1239,7 +1335,7 @@ function ProjectPulseApp() {
   );
 }
 
-export default function ProjectPulseAppRoot() {
+export default function App() {
   return (
     <ErrorBoundary>
       <ProjectPulseApp />
