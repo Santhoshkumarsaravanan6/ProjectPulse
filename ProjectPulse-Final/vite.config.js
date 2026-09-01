@@ -17,11 +17,11 @@ export default defineConfig({
       // request server-side to the real Power Automate URL,
       // avoiding the browser's CORS restriction entirely.
       '/flow': {
-        target: flowOrigin,
-        changeOrigin: true,
-        secure: true,
-        rewrite: () => flowPathAndQuery,
-      },
+  target: flowOrigin,
+  changeOrigin: true,
+  secure: false,   // ← change this line only
+  rewrite: () => flowPathAndQuery,
+},
     },
   },
 })
