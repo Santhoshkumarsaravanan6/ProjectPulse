@@ -46,7 +46,7 @@ const MODULES = [
   { key: "department", label: "Department", icon: Building2, color: "#3B6FE0", implemented: true },
   { key: "project-category", label: "Project Category", icon: Layers, color: "#8B5CF6" },
   { key: "country", label: "Country", icon: Globe2, color: "#0EA5A4", implemented: true },
-  { key: "user", label: "User", icon: User, color: "#3B6FE0" },
+  { key: "user", label: "User", icon: User, color: "#3B6FE0", implemented: true },
   { key: "project-deal-status", label: "Project Deal Status", icon: Handshake, color: "#22A06B" },
   { key: "approval-status", label: "Approval Status", icon: CheckCircle2, color: "#F59E0B" },
   { key: "billing-period", label: "Billing Period", icon: CalendarClock, color: "#8B5CF6" },
@@ -192,6 +192,68 @@ function callMasterDataFlow(entity, action, item = {}) {
 // scattered everywhere) while both funnel through the one flow call.
 const callDepartmentFlow = (action, department) => callMasterDataFlow("Department", action, department);
 const callCountryFlow = (action, country) => callMasterDataFlow("Country", action, country);
+
+/* ============================================================
+   USER FLOW — separate from callMasterDataFlow because the
+   Users table has its own field set (EmpID, FirstName, LastName,
+   Gender, JobTitle, DepartmentID) instead of the generic
+   code/name/active shape.
+
+   Same "entity" switch flow, entity="User". Body sent:
+   { entity:"User", guid, action, empId, firstName, lastName,
+     gender, jobTitle, departmentId, active }
+
+   Expected row shape back from flow (per your CREATE TABLE Users):
+   { UserID, EmpID, FirstName, LastName, Gender, JobTitle,
+     DepartmentID, IsActive }
+   ============================================================ */
+function callUserFlow(action, item = {}) {
+  const guidValue =
+    item.guid === "" || item.guid === null || item.guid === undefined ? 0 : Number(item.guid);
+
+  const body = {
+    entity: "User",
+    guid: guidValue,
+    action,
+    empId: item.empId || "",
+    firstName: item.firstName || "",
+    lastName: item.lastName || "",
+    gender: item.gender || "",
+    jobTitle: item.jobTitle || "",
+    departmentId: item.departmentId ? Number(item.departmentId) : 0,
+    active: !!item.active,
+  };
+
+  return fetch(FLOW_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then(async (res) => {
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`Flow returned ${res.status}${text ? `: ${text.slice(0, 200)}` : ""}`);
+    }
+    const json = await res.json();
+    console.log("Flow raw response [User]:", json);
+    const list = Array.isArray(json) ? json : (json.body || json.data || json.value || []);
+    const normalized = list.map((d, i) => {
+      const rawGuid = d.UserID ?? d.guid ?? d.id;
+      const guid = rawGuid !== undefined && rawGuid !== null && rawGuid !== "" ? Number(rawGuid) : "";
+      return {
+        id: guid !== "" ? guid : String(i),
+        guid,
+        empId: d.EmpID ?? d.empId ?? "",
+        firstName: d.FirstName ?? d.firstName ?? "",
+        lastName: d.LastName ?? d.lastName ?? "",
+        gender: d.Gender ?? d.gender ?? "",
+        jobTitle: d.JobTitle ?? d.jobTitle ?? "",
+        departmentId: d.DepartmentID ?? d.departmentId ?? "",
+        active: !!(d.IsActive ?? d.active ?? false),
+      };
+    });
+    return { success: true, data: normalized };
+  });
+}
 
 /* ============================================================
    SAMPLE DASHBOARD DATA
@@ -1251,6 +1313,323 @@ function CountryPanel({ mode, data, saving, error, onCancel, onSubmit }) {
 }
 
 /* ============================================================
+   USER SCREEN (full CRUD, entity="User")
+   Mirrors CountryPage's structure; extra fields + a Department
+   dropdown (FK) sourced from callDepartmentFlow("LIST").
+   ============================================================ */
+function UsersPage() {
+  const [rows, setRows] = useState([]);
+  const [departments, setDepartments] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [panel, setPanel] = useState(null); // null | { mode: 'add'|'edit', data }
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+  const [toast, setToast] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+
+  const refresh = useCallback(() => {
+    setLoading(true);
+    callUserFlow("LIST").then((res) => {
+      setRows(res.data);
+      setLoading(false);
+    });
+  }, []);
+
+  useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => { callDepartmentFlow("LIST").then((res) => setDepartments(res.data)); }, []);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(""), 2600);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  const deptName = (id) => departments.find((d) => String(d.id) === String(id))?.name || "—";
+
+  const filtered = rows
+    .filter((r) => {
+      const q = search.toLowerCase();
+      return (r.empId || "").toLowerCase().includes(q)
+        || (r.firstName || "").toLowerCase().includes(q)
+        || (r.lastName || "").toLowerCase().includes(q)
+        || (r.jobTitle || "").toLowerCase().includes(q);
+    })
+    .sort((a, b) => Number(b.id) - Number(a.id)); // newest (highest UserID) first
+  const activeCount = rows.filter((r) => r.active).length;
+
+  const kpis = [
+    { label: "Users", value: String(rows.length), icon: User, color: "#3B6FE0" },
+    { label: "Active Users", value: String(activeCount), icon: CheckCircle2, color: COLORS.success },
+    { label: "Inactive Users", value: String(rows.length - activeCount), icon: AlertCircle, color: COLORS.danger },
+  ];
+
+  const submitPanel = (form) => {
+    if (!form.empId?.trim() || !form.firstName?.trim() || !form.lastName?.trim()) {
+      setErr("Emp ID, First Name and Last Name are required.");
+      return;
+    }
+    setSaving(true);
+    setErr("");
+    const action = form.guid ? "EDIT" : "CREATE";
+    callUserFlow(action, form)
+      .then((res) => {
+        setRows(res.data);
+        setSaving(false);
+        setPanel(null);
+        setToast(form.guid ? "User updated." : "User added.");
+      })
+      .catch((e) => {
+        setSaving(false);
+        setErr(e.message);
+      });
+  };
+
+  const confirmDeleteRow = () => {
+    if (!confirmDelete) return;
+    setDeleting(true);
+    callUserFlow("DELETE", confirmDelete)
+      .then((res) => {
+        setRows(res.data);
+        setDeleting(false);
+        setConfirmDelete(null);
+        setToast("User deleted.");
+      })
+      .catch((e) => {
+        setDeleting(false);
+        setToast(`Delete failed: ${e.message}`);
+      });
+  };
+
+  return (
+    <div style={{ flex: 1, display: "flex", overflow: "hidden", position: "relative" }}>
+      <div style={{ flex: 1, padding: 26, overflowY: "auto" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 18 }}>
+          <div>
+            <div style={{ fontFamily: "Sora, sans-serif", fontSize: 20, fontWeight: 700, color: COLORS.text }}>User Master</div>
+            <div style={{ color: COLORS.textMuted, fontSize: 13.5 }}>Add, edit and manage Users</div>
+          </div>
+          <button
+            onClick={() => setPanel({ mode: "add", data: { guid: "", empId: "", firstName: "", lastName: "", gender: "", jobTitle: "", departmentId: "", active: true } })}
+            style={{
+              display: "flex", alignItems: "center", gap: 7, background: COLORS.accent, color: "#fff", border: "none",
+              borderRadius: 9, padding: "10px 16px", fontSize: 13.5, fontWeight: 700, cursor: "pointer",
+            }}
+          >
+            <Plus size={15} /> Add User
+          </button>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 14, marginBottom: 16 }}>
+          {kpis.map((k) => {
+            const Icon = k.icon;
+            return (
+              <div key={k.label} style={cardStyle}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <span style={{ color: COLORS.textMuted, fontSize: 12.5, fontWeight: 600 }}>{k.label}</span>
+                  <span style={{ width: 30, height: 30, borderRadius: 8, background: `${k.color}1F`, color: k.color, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <Icon size={15} />
+                  </span>
+                </div>
+                <div style={{ fontFamily: "Sora, sans-serif", fontSize: 26, fontWeight: 700, color: COLORS.text, marginTop: 10 }}>{k.value}</div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={{ ...cardStyle, padding: 0, overflow: "hidden" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 16px", borderBottom: `1px solid ${COLORS.border}` }}>
+            <div style={{ fontWeight: 700, fontSize: 14, color: COLORS.text }}>Users <span style={{ color: COLORS.textMuted, fontWeight: 500 }}>({filtered.length})</span></div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "7px 11px", width: 260 }}>
+                <Search size={14} color={COLORS.textMuted} />
+                <input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search by emp id, name or job title"
+                  style={{ border: "none", outline: "none", fontSize: 13, width: "100%", fontFamily: "Inter, sans-serif" }}
+                />
+              </div>
+              <button onClick={refresh} style={{ display: "flex", alignItems: "center", gap: 6, border: `1px solid ${COLORS.border}`, background: "#fff", borderRadius: 8, padding: "0 12px", fontSize: 12.5, cursor: "pointer", color: COLORS.text }}>
+                <RefreshCw size={13} className={loading ? "spin" : ""} /> Refresh
+              </button>
+            </div>
+          </div>
+
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ background: COLORS.bg }}>
+                {["Emp ID", "Name", "Job Title", "Department", "Gender", "Status", ""].map((h) => (
+                  <th key={h} style={{ textAlign: "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr><td colSpan={7} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>
+                  <Loader2 size={18} className="spin" style={{ verticalAlign: "middle", marginRight: 8 }} /> Loading users…
+                </td></tr>
+              ) : filtered.length === 0 ? (
+                <tr><td colSpan={7} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>No users match your search.</td></tr>
+              ) : filtered.map((u, i) => (
+                <tr key={u.id} style={{ borderTop: `1px solid ${COLORS.border}`, background: i % 2 ? "#FAFBFD" : "#fff" }}>
+                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text, fontWeight: 600 }}>{u.empId}</td>
+                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text }}>{u.firstName} {u.lastName}</td>
+                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text }}>{u.jobTitle || "—"}</td>
+                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text }}>{deptName(u.departmentId)}</td>
+                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text }}>{u.gender || "—"}</td>
+                  <td style={{ padding: "11px 16px" }}><StatusBadge active={u.active} /></td>
+                  <td style={{ padding: "11px 16px", textAlign: "right" }}>
+                    <div style={{ display: "inline-flex", gap: 8 }}>
+                      <button
+                        onClick={() => setPanel({ mode: "edit", data: { ...u } })}
+                        style={{ display: "inline-flex", alignItems: "center", gap: 6, background: COLORS.accentSoft, color: COLORS.accent, border: "none", borderRadius: 7, padding: "6px 11px", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}
+                      >
+                        <Pencil size={12} /> Edit
+                      </button>
+                      <button
+                        onClick={() => setConfirmDelete(u)}
+                        style={{ display: "inline-flex", alignItems: "center", gap: 6, background: COLORS.dangerSoft, color: COLORS.danger, border: "none", borderRadius: 7, padding: "6px 11px", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}
+                      >
+                        <Trash2 size={12} /> Delete
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {panel && (
+        <UserPanel
+          mode={panel.mode}
+          data={panel.data}
+          departments={departments}
+          saving={saving}
+          error={err}
+          onCancel={() => { setPanel(null); setErr(""); }}
+          onSubmit={submitPanel}
+        />
+      )}
+
+      {confirmDelete && (
+        <ConfirmModal
+          title="Delete this user?"
+          message={`"${confirmDelete.firstName} ${confirmDelete.lastName}" (${confirmDelete.empId}) will be permanently removed. This can't be undone.`}
+          confirmLabel="Delete"
+          busy={deleting}
+          onCancel={() => setConfirmDelete(null)}
+          onConfirm={confirmDeleteRow}
+        />
+      )}
+
+      {toast && (
+        <div style={{
+          position: "absolute", bottom: 22, left: "50%", transform: "translateX(-50%)",
+          background: COLORS.text, color: "#fff", padding: "10px 18px", borderRadius: 9, fontSize: 13, fontWeight: 600,
+          display: "flex", alignItems: "center", gap: 8, boxShadow: "0 12px 30px rgba(0,0,0,0.2)",
+        }}>
+          <CheckCircle2 size={15} color={COLORS.success} /> {toast}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function UserPanel({ mode, data, departments, saving, error, onCancel, onSubmit }) {
+  const [form, setForm] = useState(data);
+  useEffect(() => setForm(data), [data]);
+
+  return (
+    <div style={{
+      width: 340, background: COLORS.card, borderLeft: `1px solid ${COLORS.border}`, flexShrink: 0,
+      display: "flex", flexDirection: "column", boxShadow: "-8px 0 30px rgba(15,20,40,0.06)",
+    }}>
+      <div style={{ padding: "18px 20px", borderBottom: `1px solid ${COLORS.border}`, display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 15, color: COLORS.text }}>{mode === "add" ? "Add New User" : "Edit User"}</div>
+          <div style={{ fontSize: 12, color: COLORS.accent, marginTop: 2 }}>Fill all required fields below</div>
+        </div>
+        <button onClick={onCancel} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.textMuted }}><X size={18} /></button>
+      </div>
+
+      <div style={{ padding: 20, flex: 1, overflowY: "auto" }}>
+        <label style={labelStyle}>Emp ID*</label>
+        <input value={form.empId} onChange={(e) => setForm({ ...form, empId: e.target.value })} placeholder="e.g. EMP1001" style={inputStyle} />
+
+        <label style={{ ...labelStyle, marginTop: 16 }}>First Name*</label>
+        <input value={form.firstName} onChange={(e) => setForm({ ...form, firstName: e.target.value })} placeholder="e.g. John" style={inputStyle} />
+
+        <label style={{ ...labelStyle, marginTop: 16 }}>Last Name*</label>
+        <input value={form.lastName} onChange={(e) => setForm({ ...form, lastName: e.target.value })} placeholder="e.g. Doe" style={inputStyle} />
+
+        <label style={{ ...labelStyle, marginTop: 16 }}>Gender</label>
+        <select value={form.gender} onChange={(e) => setForm({ ...form, gender: e.target.value })} style={inputStyle}>
+          <option value="">Select gender</option>
+          <option value="Male">Male</option>
+          <option value="Female">Female</option>
+          <option value="Other">Other</option>
+        </select>
+
+        <label style={{ ...labelStyle, marginTop: 16 }}>Job Title</label>
+        <input value={form.jobTitle} onChange={(e) => setForm({ ...form, jobTitle: e.target.value })} placeholder="e.g. Software Engineer" style={inputStyle} />
+
+        <label style={{ ...labelStyle, marginTop: 16 }}>Department</label>
+        <select value={form.departmentId || ""} onChange={(e) => setForm({ ...form, departmentId: e.target.value })} style={inputStyle}>
+          <option value="">Select department</option>
+          {departments.map((d) => (
+            <option key={d.id} value={d.id}>{d.name}</option>
+          ))}
+        </select>
+
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 20, padding: "12px 14px", border: `1px solid ${COLORS.border}`, borderRadius: 10 }}>
+          <span style={{ fontSize: 13.5, fontWeight: 600, color: COLORS.text }}>Active</span>
+          <div
+            onClick={() => setForm({ ...form, active: !form.active })}
+            style={{
+              width: 40, height: 22, borderRadius: 999, background: form.active ? COLORS.accent : "#D7DCE6",
+              position: "relative", cursor: "pointer", transition: "background 0.15s",
+            }}
+          >
+            <div style={{
+              width: 18, height: 18, borderRadius: "50%", background: "#fff", position: "absolute", top: 2,
+              left: form.active ? 20 : 2, transition: "left 0.15s", boxShadow: "0 1px 3px rgba(0,0,0,0.25)",
+            }} />
+          </div>
+        </div>
+
+        {error && (
+          <div style={{ display: "flex", gap: 8, alignItems: "center", color: COLORS.danger, fontSize: 12.5, marginTop: 16 }}>
+            <AlertCircle size={14} /> {error}
+          </div>
+        )}
+      </div>
+
+      <div style={{ padding: 16, borderTop: `1px solid ${COLORS.border}`, display: "flex", gap: 10, justifyContent: "flex-end" }}>
+        <button onClick={onCancel} style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", color: COLORS.text }}>
+          Cancel
+        </button>
+        <button
+          onClick={() => onSubmit(form)}
+          disabled={saving}
+          style={{
+            padding: "9px 18px", borderRadius: 8, border: "none", background: COLORS.accent, color: "#fff",
+            fontSize: 13, fontWeight: 700, cursor: saving ? "default" : "pointer", opacity: saving ? 0.75 : 1,
+            display: "flex", alignItems: "center", gap: 7,
+          }}
+        >
+          {saving && <Loader2 size={13} className="spin" />}
+          {saving ? "Saving…" : "Submit"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
    GENERIC STUB PAGE for not-yet-built modules
    ============================================================ */
 function ModuleStub({ moduleKey }) {
@@ -1328,7 +1707,8 @@ function ProjectPulseApp() {
         {page === "dashboard" && <DashboardHome onOpenModule={setPage} />}
         {page === "department" && <DepartmentsPage />}
         {page === "country" && <CountryPage />}
-        {inModuleShell && page !== "department" && page !== "country" && <ModuleStub moduleKey={page} />}
+        {page === "user" && <UsersPage />}
+        {inModuleShell && page !== "department" && page !== "country" && page !== "user" && <ModuleStub moduleKey={page} />}
       </div>
       <style>{`.spin { animation: spin 0.8s linear infinite; } @keyframes spin { to { transform: rotate(360deg); } } * { box-sizing: border-box; }`}</style>
     </div>
