@@ -10,6 +10,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   LineChart, Line, PieChart, Pie, Cell, Legend
 } from "recharts";
+import { ProjectDashboardPage, ResourceAllocationPage } from "./ProjectAllocation";
 
 /* ============================================================
    DESIGN TOKENS
@@ -43,8 +44,10 @@ const DEMO_PASSWORD = "Devoir@123";
    MODULE REGISTRY — mirrors the Power Apps left nav exactly
    ============================================================ */
 const MODULES = [
+  { key: "project-dashboard", label: "Project Dashboard", icon: FolderKanban, color: "#22A06B", implemented: true },
+  { key: "resource-allocation", label: "Resource Allocation", icon: Users2, color: "#F59E0B", implemented: true },
   { key: "department", label: "Department", icon: Building2, color: "#3B6FE0", implemented: true },
-  { key: "project-category", label: "Project Category", icon: Layers, color: "#8B5CF6" },
+  { key: "project-category", label: "Project Category", icon: Layers, color: "#8B5CF6", implemented: true },
   { key: "country", label: "Country", icon: Globe2, color: "#0EA5A4", implemented: true },
   { key: "user", label: "User", icon: User, color: "#3B6FE0", implemented: true },
   { key: "project-deal-status", label: "Project Deal Status", icon: Handshake, color: "#22A06B" },
@@ -52,7 +55,7 @@ const MODULES = [
   { key: "billing-period", label: "Billing Period", icon: CalendarClock, color: "#8B5CF6" },
   { key: "client", label: "Client", icon: Briefcase, color: "#EAB308" },
   { key: "client-contact", label: "Client Contact", icon: Contact, color: "#3B6FE0" },
-  { key: "roles", label: "Roles", icon: Shield, color: "#8B5CF6" },
+  { key: "roles", label: "Roles", icon: Shield, color: "#8B5CF6", implemented: true },
   { key: "invoice-status", label: "Invoice Status", icon: Receipt, color: "#3B6FE0" },
   { key: "user-roles", label: "User Roles", icon: UserCog, color: "#0EA5A4" },
   { key: "project-status", label: "Project Status", icon: Flag, color: "#E11D48" },
@@ -66,10 +69,10 @@ const MODULES = [
    forwards to the URL below.
 
    Schema: ONE flow now serves every master-data module (Department,
-   Country, and future ones) via an "entity" switch, since they all
-   share the same shape (code / name / active). Paste this into the
-   flow trigger's "Request Body JSON Schema" so Power Automate
-   generates typed dynamic content for each field:
+   Country, ProjectCategory, and future ones) via an "entity" switch,
+   since they all share the same shape (code / name / active). Paste
+   this into the flow trigger's "Request Body JSON Schema" so Power
+   Automate generates typed dynamic content for each field:
 
    {
      "type": "object",
@@ -83,18 +86,18 @@ const MODULES = [
      }
    }
 
-     - "entity" -> "Department" | "Country" (add more as new modules
-                   come online). Switch on triggerBody()?['entity']
-                   at the top of the flow to route into the right
-                   table's branch (Department table vs Country table).
+     - "entity" -> "Department" | "Country" | "ProjectCategory" (add more
+                   as new modules come online). Switch on
+                   triggerBody()?['entity'] at the top of the flow to
+                   route into the right table's branch.
      - "guid"   -> the SQL row's identity/primary key column (an
                    integer, e.g. 1, 2, 3 — despite the name, this is
                    NOT a Dataverse GUID for this source, it's a plain
-                   int identity column: DepartmentId / CountryId). 0
-                   on CREATE/LIST since the database generates it;
-                   required on EDIT/DELETE so the flow's Update row /
-                   Delete row steps know exactly which record to
-                   target (use "Id" = triggerBody()?['guid']).
+                   int identity column: DepartmentId / CountryId /
+                   CategoryId). 0 on CREATE/LIST since the database
+                   generates it; required on EDIT/DELETE so the flow's
+                   Update row / Delete row steps know exactly which
+                   record to target (use "Id" = triggerBody()?['guid']).
      - "action" -> "LIST" | "CREATE" | "EDIT" | "DELETE". Nest this
                    switch inside each entity branch:
                      LIST   -> skip Create/Update/Delete, just return rows
@@ -102,8 +105,9 @@ const MODULES = [
                      EDIT   -> Update a row (by guid), then return the list
                      DELETE -> Delete a row (by guid), then return the list
      - "code" / "name" / "active" -> maps to:
-                   Department -> Department Code / Department Name / Status
-                   Country    -> CountryCode / CountryName / IsActive
+                   Department      -> Department Code / Department Name / Status
+                   Country         -> CountryCode / CountryName / IsActive
+                   ProjectCategory -> Category Code / Category Name / IsActive
 
    Flow response shape (as actually returned, per entity):
    {
@@ -117,6 +121,11 @@ const MODULES = [
        { "CountryCode": "IN", "CountryName": "India", "IsActive": true, "guid": 1 }
      ]
    }
+   {
+     "body": [
+       { "Category Code": "DEV", "Category Name": "Development", "IsActive": true, "guid": 1 }
+     ]
+   }
    ============================================================ */
 const FLOW_URL_DIRECT =
   "https://93cd50265ecdea7aa4fd295cb67b42.d4.environment.api.powerplatform.com:443/powerautomate/automations/direct/cu/22/workflows/fa6a24a2ca4b4db498b9eb939349553a/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=YBkFBfYF1FPY_DHWRI0JSpXmHw0ST46XX93XUHeXvwc";
@@ -127,21 +136,23 @@ const FLOW_URL_DIRECT =
 // branching is needed between environments.
 const FLOW_URL = "/flow";
 
-// Field-name maps so the one generic function can normalize either
+// Field-name maps so the one generic function can normalize any
 // entity's SQL column names into the same { code, name, active } shape
 // the grids/panels use.
 const ENTITY_FIELD_MAP = {
   Department: { codeCol: "Department Code", nameCol: "Department Name", activeCol: "Status" },
   Country: { codeCol: "CountryCode", nameCol: "CountryName", activeCol: "IsActive" },
+  ProjectCategory: { codeCol: "CategoryCode", nameCol: "CategoryName", activeCol: "IsActive" },
+  Role: { codeCol: "Role Code", nameCol: "Role Name", activeCol: "IsActive" },
 };
 
 function callMasterDataFlow(entity, action, item = {}) {
-  // entity: "Department" | "Country" — routes to the right table inside
-  //         the single shared flow.
+  // entity: "Department" | "Country" | "ProjectCategory" — routes to the
+  //         right table inside the single shared flow.
   // action: "LIST" | "CREATE" | "EDIT" | "DELETE"
-  // "guid" is a plain integer identity column (DepartmentId / CountryId),
-  // not a string GUID — 0 means "no id yet" (CREATE/LIST), and a real
-  // positive integer is sent for EDIT/DELETE.
+  // "guid" is a plain integer identity column (DepartmentId / CountryId /
+  // CategoryId), not a string GUID — 0 means "no id yet" (CREATE/LIST),
+  // and a real positive integer is sent for EDIT/DELETE.
   const guidValue =
     item.guid === "" || item.guid === null || item.guid === undefined
       ? 0
@@ -168,8 +179,9 @@ function callMasterDataFlow(entity, action, item = {}) {
     const json = await res.json();
     console.log(`Flow raw response [${entity}]:`, json); // TEMP: check DevTools console to confirm shape
     // The flow's Select step returns entity-specific column names
-    // ("Department Code" vs "CountryCode", etc.) plus a shared "guid"
-    // (a plain integer identity) — normalize both shapes the same way.
+    // ("Department Code" vs "CountryCode" vs "Category Code", etc.) plus
+    // a shared "guid" (a plain integer identity) — normalize both shapes
+    // the same way.
     const { codeCol, nameCol, activeCol } = ENTITY_FIELD_MAP[entity];
     const list = Array.isArray(json) ? json : (json.body || json.data || json.value || []);
     const normalized = list.map((d, i) => {
@@ -192,6 +204,8 @@ function callMasterDataFlow(entity, action, item = {}) {
 // scattered everywhere) while both funnel through the one flow call.
 const callDepartmentFlow = (action, department) => callMasterDataFlow("Department", action, department);
 const callCountryFlow = (action, country) => callMasterDataFlow("Country", action, country);
+const callProjectCategoryFlow = (action, category) => callMasterDataFlow("ProjectCategory", action, category);
+const callRoleFlow = (action, role) => callMasterDataFlow("Role", action, role);
 
 /* ============================================================
    USER FLOW — separate from callMasterDataFlow because the
@@ -271,15 +285,6 @@ const approvalSplit = [
   { name: "Pending", value: 23, color: "#F59E0B" },
   { name: "Rejected", value: 15, color: COLORS.danger },
 ];
-
-// Distinct, cycling palette for charts that color each bar/slice
-// individually (e.g. the Country-by-starting-letter distribution).
-const CHART_PALETTE = [
-  "#3B6FE0", "#8B5CF6", "#0EA5A4", "#F59E0B", "#22A06B",
-  "#E11D48", "#EAB308", "#06B6D4", "#A855F7", "#F43F5E",
-];
-
-
 
 /* ============================================================
    SHARED UI BITS
@@ -1235,6 +1240,13 @@ function CountryPage() {
   );
 }
 
+// Distinct, cycling palette for charts that color each bar/slice
+// individually (e.g. the Country-by-starting-letter distribution).
+const CHART_PALETTE = [
+  "#3B6FE0", "#8B5CF6", "#0EA5A4", "#F59E0B", "#22A06B",
+  "#E11D48", "#EAB308", "#06B6D4", "#A855F7", "#F43F5E",
+];
+
 function CountryPanel({ mode, data, saving, error, onCancel, onSubmit }) {
   const [form, setForm] = useState(data);
   useEffect(() => setForm(data), [data]);
@@ -1265,6 +1277,584 @@ function CountryPanel({ mode, data, saving, error, onCancel, onSubmit }) {
           value={form.name}
           onChange={(e) => setForm({ ...form, name: e.target.value })}
           placeholder="e.g. France"
+          style={inputStyle}
+        />
+
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 20, padding: "12px 14px", border: `1px solid ${COLORS.border}`, borderRadius: 10 }}>
+          <span style={{ fontSize: 13.5, fontWeight: 600, color: COLORS.text }}>Active</span>
+          <div
+            onClick={() => setForm({ ...form, active: !form.active })}
+            style={{
+              width: 40, height: 22, borderRadius: 999, background: form.active ? COLORS.accent : "#D7DCE6",
+              position: "relative", cursor: "pointer", transition: "background 0.15s",
+            }}
+          >
+            <div style={{
+              width: 18, height: 18, borderRadius: "50%", background: "#fff", position: "absolute", top: 2,
+              left: form.active ? 20 : 2, transition: "left 0.15s", boxShadow: "0 1px 3px rgba(0,0,0,0.25)",
+            }} />
+          </div>
+        </div>
+
+        {error && (
+          <div style={{ display: "flex", gap: 8, alignItems: "center", color: COLORS.danger, fontSize: 12.5, marginTop: 16 }}>
+            <AlertCircle size={14} /> {error}
+          </div>
+        )}
+      </div>
+
+      <div style={{ padding: 16, borderTop: `1px solid ${COLORS.border}`, display: "flex", gap: 10, justifyContent: "flex-end" }}>
+        <button onClick={onCancel} style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", color: COLORS.text }}>
+          Cancel
+        </button>
+        <button
+          onClick={() => onSubmit(form)}
+          disabled={saving}
+          style={{
+            padding: "9px 18px", borderRadius: 8, border: "none", background: COLORS.accent, color: "#fff",
+            fontSize: 13, fontWeight: 700, cursor: saving ? "default" : "pointer", opacity: saving ? 0.75 : 1,
+            display: "flex", alignItems: "center", gap: 7,
+          }}
+        >
+          {saving && <Loader2 size={13} className="spin" />}
+          {saving ? "Saving…" : "Submit"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   PROJECT CATEGORY SCREEN (full CRUD, entity="ProjectCategory")
+   Mirrors CountryPage exactly — same code/name/active shape.
+   ============================================================ */
+function ProjectCategoryPage() {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [panel, setPanel] = useState(null); // null | { mode: 'add'|'edit', data }
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+  const [toast, setToast] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState(null); // null | category row
+  const [deleting, setDeleting] = useState(false);
+
+  const refresh = useCallback(() => {
+    setLoading(true);
+    callProjectCategoryFlow("LIST").then((res) => {
+      setRows(res.data);
+      setLoading(false);
+    });
+  }, []);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(""), 2600);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  const filtered = rows.filter((r) =>
+    (r.code || "").toLowerCase().includes(search.toLowerCase()) || (r.name || "").toLowerCase().includes(search.toLowerCase())
+  );
+  const activeCount = rows.filter((r) => r.active).length;
+
+  const kpis = [
+    { label: "Categories", value: String(rows.length), icon: Layers, color: "#8B5CF6" },
+    { label: "Active Categories", value: String(activeCount), icon: CheckCircle2, color: COLORS.success },
+    { label: "Inactive Categories", value: String(rows.length - activeCount), icon: AlertCircle, color: COLORS.danger },
+  ];
+
+  const submitPanel = (form) => {
+    if (!form.code?.trim() || !form.name?.trim()) {
+      setErr("Category Code and Name are required.");
+      return;
+    }
+    setSaving(true);
+    setErr("");
+    const action = form.guid ? "EDIT" : "CREATE";
+    callProjectCategoryFlow(action, form)
+      .then((res) => {
+        setRows(res.data); // flow returns the refreshed list — reflect it immediately
+        setSaving(false);
+        setPanel(null);
+        setToast(form.guid ? "Category updated." : "Category added.");
+      })
+      .catch((e) => {
+        setSaving(false);
+        setErr(e.message);
+      });
+  };
+
+  const confirmDeleteRow = () => {
+    if (!confirmDelete) return;
+    setDeleting(true);
+    callProjectCategoryFlow("DELETE", confirmDelete)
+      .then((res) => {
+        setRows(res.data);
+        setDeleting(false);
+        setConfirmDelete(null);
+        setToast("Category deleted.");
+      })
+      .catch((e) => {
+        setDeleting(false);
+        setToast(`Delete failed: ${e.message}`);
+      });
+  };
+
+  return (
+    <div style={{ flex: 1, display: "flex", overflow: "hidden", position: "relative" }}>
+      <div style={{ flex: 1, padding: 26, overflowY: "auto" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 18 }}>
+          <div>
+            <div style={{ fontFamily: "Sora, sans-serif", fontSize: 20, fontWeight: 700, color: COLORS.text }}>Project Category Master</div>
+            <div style={{ color: COLORS.textMuted, fontSize: 13.5 }}>Add, edit and manage Project Categories</div>
+          </div>
+          <button
+            onClick={() => setPanel({ mode: "add", data: { guid: "", code: "", name: "", active: true } })}
+            style={{
+              display: "flex", alignItems: "center", gap: 7, background: COLORS.accent, color: "#fff", border: "none",
+              borderRadius: 9, padding: "10px 16px", fontSize: 13.5, fontWeight: 700, cursor: "pointer",
+            }}
+          >
+            <Plus size={15} /> Add Category
+          </button>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 14, marginBottom: 16 }}>
+          {kpis.map((k) => {
+            const Icon = k.icon;
+            return (
+              <div key={k.label} style={cardStyle}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <span style={{ color: COLORS.textMuted, fontSize: 12.5, fontWeight: 600 }}>{k.label}</span>
+                  <span style={{ width: 30, height: 30, borderRadius: 8, background: `${k.color}1F`, color: k.color, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <Icon size={15} />
+                  </span>
+                </div>
+                <div style={{ fontFamily: "Sora, sans-serif", fontSize: 26, fontWeight: 700, color: COLORS.text, marginTop: 10 }}>{k.value}</div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={{ ...cardStyle, padding: 0, overflow: "hidden" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 16px", borderBottom: `1px solid ${COLORS.border}` }}>
+            <div style={{ fontWeight: 700, fontSize: 14, color: COLORS.text }}>Categories <span style={{ color: COLORS.textMuted, fontWeight: 500 }}>({filtered.length})</span></div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "7px 11px", width: 260 }}>
+                <Search size={14} color={COLORS.textMuted} />
+                <input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search by code or name"
+                  style={{ border: "none", outline: "none", fontSize: 13, width: "100%", fontFamily: "Inter, sans-serif" }}
+                />
+              </div>
+              <button onClick={refresh} style={{ display: "flex", alignItems: "center", gap: 6, border: `1px solid ${COLORS.border}`, background: "#fff", borderRadius: 8, padding: "0 12px", fontSize: 12.5, cursor: "pointer", color: COLORS.text }}>
+                <RefreshCw size={13} className={loading ? "spin" : ""} /> Refresh
+              </button>
+            </div>
+          </div>
+
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ background: COLORS.bg }}>
+                {["Category Code", "Category Name", "Status", ""].map((h) => (
+                  <th key={h} style={{ textAlign: "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr><td colSpan={4} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>
+                  <Loader2 size={18} className="spin" style={{ verticalAlign: "middle", marginRight: 8 }} /> Loading categories…
+                </td></tr>
+              ) : filtered.length === 0 ? (
+                <tr><td colSpan={4} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>No categories match your search.</td></tr>
+              ) : filtered.map((c, i) => (
+                <tr key={c.id} style={{ borderTop: `1px solid ${COLORS.border}`, background: i % 2 ? "#FAFBFD" : "#fff" }}>
+                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text, fontWeight: 600 }}>{c.code}</td>
+                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text }}>{c.name}</td>
+                  <td style={{ padding: "11px 16px" }}><StatusBadge active={c.active} /></td>
+                  <td style={{ padding: "11px 16px", textAlign: "right" }}>
+                    <div style={{ display: "inline-flex", gap: 8 }}>
+                      <button
+                        onClick={() => setPanel({ mode: "edit", data: { ...c } })}
+                        style={{ display: "inline-flex", alignItems: "center", gap: 6, background: COLORS.accentSoft, color: COLORS.accent, border: "none", borderRadius: 7, padding: "6px 11px", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}
+                      >
+                        <Pencil size={12} /> Edit
+                      </button>
+                      <button
+                        onClick={() => setConfirmDelete(c)}
+                        style={{ display: "inline-flex", alignItems: "center", gap: 6, background: COLORS.dangerSoft, color: COLORS.danger, border: "none", borderRadius: 7, padding: "6px 11px", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}
+                      >
+                        <Trash2 size={12} /> Delete
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {panel && (
+        <ProjectCategoryPanel
+          mode={panel.mode}
+          data={panel.data}
+          saving={saving}
+          error={err}
+          onCancel={() => { setPanel(null); setErr(""); }}
+          onSubmit={submitPanel}
+        />
+      )}
+
+      {confirmDelete && (
+        <ConfirmModal
+          title="Delete this category?"
+          message={`"${confirmDelete.name}" (${confirmDelete.code}) will be permanently removed. This can't be undone.`}
+          confirmLabel="Delete"
+          busy={deleting}
+          onCancel={() => setConfirmDelete(null)}
+          onConfirm={confirmDeleteRow}
+        />
+      )}
+
+      {toast && (
+        <div style={{
+          position: "absolute", bottom: 22, left: "50%", transform: "translateX(-50%)",
+          background: COLORS.text, color: "#fff", padding: "10px 18px", borderRadius: 9, fontSize: 13, fontWeight: 600,
+          display: "flex", alignItems: "center", gap: 8, boxShadow: "0 12px 30px rgba(0,0,0,0.2)",
+        }}>
+          <CheckCircle2 size={15} color={COLORS.success} /> {toast}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProjectCategoryPanel({ mode, data, saving, error, onCancel, onSubmit }) {
+  const [form, setForm] = useState(data);
+  useEffect(() => setForm(data), [data]);
+
+  return (
+    <div style={{
+      width: 340, background: COLORS.card, borderLeft: `1px solid ${COLORS.border}`, flexShrink: 0,
+      display: "flex", flexDirection: "column", boxShadow: "-8px 0 30px rgba(15,20,40,0.06)",
+    }}>
+      <div style={{ padding: "18px 20px", borderBottom: `1px solid ${COLORS.border}`, display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 15, color: COLORS.text }}>{mode === "add" ? "Add New Category" : "Edit Category"}</div>
+          <div style={{ fontSize: 12, color: COLORS.accent, marginTop: 2 }}>Fill all required fields below</div>
+        </div>
+        <button onClick={onCancel} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.textMuted }}><X size={18} /></button>
+      </div>
+
+      <div style={{ padding: 20, flex: 1, overflowY: "auto" }}>
+        <label style={labelStyle}>Category Code*</label>
+        <input
+          value={form.code}
+          onChange={(e) => setForm({ ...form, code: e.target.value })}
+          placeholder="e.g. DEV"
+          style={inputStyle}
+        />
+        <label style={{ ...labelStyle, marginTop: 16 }}>Category Name*</label>
+        <input
+          value={form.name}
+          onChange={(e) => setForm({ ...form, name: e.target.value })}
+          placeholder="e.g. Development"
+          style={inputStyle}
+        />
+
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 20, padding: "12px 14px", border: `1px solid ${COLORS.border}`, borderRadius: 10 }}>
+          <span style={{ fontSize: 13.5, fontWeight: 600, color: COLORS.text }}>Active</span>
+          <div
+            onClick={() => setForm({ ...form, active: !form.active })}
+            style={{
+              width: 40, height: 22, borderRadius: 999, background: form.active ? COLORS.accent : "#D7DCE6",
+              position: "relative", cursor: "pointer", transition: "background 0.15s",
+            }}
+          >
+            <div style={{
+              width: 18, height: 18, borderRadius: "50%", background: "#fff", position: "absolute", top: 2,
+              left: form.active ? 20 : 2, transition: "left 0.15s", boxShadow: "0 1px 3px rgba(0,0,0,0.25)",
+            }} />
+          </div>
+        </div>
+
+        {error && (
+          <div style={{ display: "flex", gap: 8, alignItems: "center", color: COLORS.danger, fontSize: 12.5, marginTop: 16 }}>
+            <AlertCircle size={14} /> {error}
+          </div>
+        )}
+      </div>
+
+      <div style={{ padding: 16, borderTop: `1px solid ${COLORS.border}`, display: "flex", gap: 10, justifyContent: "flex-end" }}>
+        <button onClick={onCancel} style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", color: COLORS.text }}>
+          Cancel
+        </button>
+        <button
+          onClick={() => onSubmit(form)}
+          disabled={saving}
+          style={{
+            padding: "9px 18px", borderRadius: 8, border: "none", background: COLORS.accent, color: "#fff",
+            fontSize: 13, fontWeight: 700, cursor: saving ? "default" : "pointer", opacity: saving ? 0.75 : 1,
+            display: "flex", alignItems: "center", gap: 7,
+          }}
+        >
+          {saving && <Loader2 size={13} className="spin" />}
+          {saving ? "Saving…" : "Submit"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   ROLES SCREEN (full CRUD, entity="Role")
+   Mirrors ProjectCategoryPage exactly — same code/name/active shape.
+   ============================================================ */
+function RolesPage() {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [panel, setPanel] = useState(null); // null | { mode: 'add'|'edit', data }
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+  const [toast, setToast] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState(null); // null | role row
+  const [deleting, setDeleting] = useState(false);
+
+  const refresh = useCallback(() => {
+    setLoading(true);
+    callRoleFlow("LIST").then((res) => {
+      setRows(res.data);
+      setLoading(false);
+    });
+  }, []);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(""), 2600);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  const filtered = rows.filter((r) =>
+    (r.code || "").toLowerCase().includes(search.toLowerCase()) || (r.name || "").toLowerCase().includes(search.toLowerCase())
+  );
+  const activeCount = rows.filter((r) => r.active).length;
+
+  const kpis = [
+    { label: "Roles", value: String(rows.length), icon: Shield, color: "#8B5CF6" },
+    { label: "Active Roles", value: String(activeCount), icon: CheckCircle2, color: COLORS.success },
+    { label: "Inactive Roles", value: String(rows.length - activeCount), icon: AlertCircle, color: COLORS.danger },
+  ];
+
+  const submitPanel = (form) => {
+    if (!form.code?.trim() || !form.name?.trim()) {
+      setErr("Role Code and Name are required.");
+      return;
+    }
+    setSaving(true);
+    setErr("");
+    const action = form.guid ? "EDIT" : "CREATE";
+    callRoleFlow(action, form)
+      .then((res) => {
+        setRows(res.data); // flow returns the refreshed list — reflect it immediately
+        setSaving(false);
+        setPanel(null);
+        setToast(form.guid ? "Role updated." : "Role added.");
+      })
+      .catch((e) => {
+        setSaving(false);
+        setErr(e.message);
+      });
+  };
+
+  const confirmDeleteRow = () => {
+    if (!confirmDelete) return;
+    setDeleting(true);
+    callRoleFlow("DELETE", confirmDelete)
+      .then((res) => {
+        setRows(res.data);
+        setDeleting(false);
+        setConfirmDelete(null);
+        setToast("Role deleted.");
+      })
+      .catch((e) => {
+        setDeleting(false);
+        setToast(`Delete failed: ${e.message}`);
+      });
+  };
+
+  return (
+    <div style={{ flex: 1, display: "flex", overflow: "hidden", position: "relative" }}>
+      <div style={{ flex: 1, padding: 26, overflowY: "auto" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 18 }}>
+          <div>
+            <div style={{ fontFamily: "Sora, sans-serif", fontSize: 20, fontWeight: 700, color: COLORS.text }}>Role Master</div>
+            <div style={{ color: COLORS.textMuted, fontSize: 13.5 }}>Add, edit and manage Roles</div>
+          </div>
+          <button
+            onClick={() => setPanel({ mode: "add", data: { guid: "", code: "", name: "", active: true } })}
+            style={{
+              display: "flex", alignItems: "center", gap: 7, background: COLORS.accent, color: "#fff", border: "none",
+              borderRadius: 9, padding: "10px 16px", fontSize: 13.5, fontWeight: 700, cursor: "pointer",
+            }}
+          >
+            <Plus size={15} /> Add Role
+          </button>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 14, marginBottom: 16 }}>
+          {kpis.map((k) => {
+            const Icon = k.icon;
+            return (
+              <div key={k.label} style={cardStyle}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <span style={{ color: COLORS.textMuted, fontSize: 12.5, fontWeight: 600 }}>{k.label}</span>
+                  <span style={{ width: 30, height: 30, borderRadius: 8, background: `${k.color}1F`, color: k.color, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <Icon size={15} />
+                  </span>
+                </div>
+                <div style={{ fontFamily: "Sora, sans-serif", fontSize: 26, fontWeight: 700, color: COLORS.text, marginTop: 10 }}>{k.value}</div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={{ ...cardStyle, padding: 0, overflow: "hidden" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 16px", borderBottom: `1px solid ${COLORS.border}` }}>
+            <div style={{ fontWeight: 700, fontSize: 14, color: COLORS.text }}>Roles <span style={{ color: COLORS.textMuted, fontWeight: 500 }}>({filtered.length})</span></div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "7px 11px", width: 260 }}>
+                <Search size={14} color={COLORS.textMuted} />
+                <input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search by code or name"
+                  style={{ border: "none", outline: "none", fontSize: 13, width: "100%", fontFamily: "Inter, sans-serif" }}
+                />
+              </div>
+              <button onClick={refresh} style={{ display: "flex", alignItems: "center", gap: 6, border: `1px solid ${COLORS.border}`, background: "#fff", borderRadius: 8, padding: "0 12px", fontSize: 12.5, cursor: "pointer", color: COLORS.text }}>
+                <RefreshCw size={13} className={loading ? "spin" : ""} /> Refresh
+              </button>
+            </div>
+          </div>
+
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ background: COLORS.bg }}>
+                {["Role Code", "Role Name", "Status", ""].map((h) => (
+                  <th key={h} style={{ textAlign: "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr><td colSpan={4} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>
+                  <Loader2 size={18} className="spin" style={{ verticalAlign: "middle", marginRight: 8 }} /> Loading roles…
+                </td></tr>
+              ) : filtered.length === 0 ? (
+                <tr><td colSpan={4} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>No roles match your search.</td></tr>
+              ) : filtered.map((r, i) => (
+                <tr key={r.id} style={{ borderTop: `1px solid ${COLORS.border}`, background: i % 2 ? "#FAFBFD" : "#fff" }}>
+                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text, fontWeight: 600 }}>{r.code}</td>
+                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text }}>{r.name}</td>
+                  <td style={{ padding: "11px 16px" }}><StatusBadge active={r.active} /></td>
+                  <td style={{ padding: "11px 16px", textAlign: "right" }}>
+                    <div style={{ display: "inline-flex", gap: 8 }}>
+                      <button
+                        onClick={() => setPanel({ mode: "edit", data: { ...r } })}
+                        style={{ display: "inline-flex", alignItems: "center", gap: 6, background: COLORS.accentSoft, color: COLORS.accent, border: "none", borderRadius: 7, padding: "6px 11px", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}
+                      >
+                        <Pencil size={12} /> Edit
+                      </button>
+                      <button
+                        onClick={() => setConfirmDelete(r)}
+                        style={{ display: "inline-flex", alignItems: "center", gap: 6, background: COLORS.dangerSoft, color: COLORS.danger, border: "none", borderRadius: 7, padding: "6px 11px", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}
+                      >
+                        <Trash2 size={12} /> Delete
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {panel && (
+        <RolePanel
+          mode={panel.mode}
+          data={panel.data}
+          saving={saving}
+          error={err}
+          onCancel={() => { setPanel(null); setErr(""); }}
+          onSubmit={submitPanel}
+        />
+      )}
+
+      {confirmDelete && (
+        <ConfirmModal
+          title="Delete this role?"
+          message={`"${confirmDelete.name}" (${confirmDelete.code}) will be permanently removed. This can't be undone.`}
+          confirmLabel="Delete"
+          busy={deleting}
+          onCancel={() => setConfirmDelete(null)}
+          onConfirm={confirmDeleteRow}
+        />
+      )}
+
+      {toast && (
+        <div style={{
+          position: "absolute", bottom: 22, left: "50%", transform: "translateX(-50%)",
+          background: COLORS.text, color: "#fff", padding: "10px 18px", borderRadius: 9, fontSize: 13, fontWeight: 600,
+          display: "flex", alignItems: "center", gap: 8, boxShadow: "0 12px 30px rgba(0,0,0,0.2)",
+        }}>
+          <CheckCircle2 size={15} color={COLORS.success} /> {toast}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RolePanel({ mode, data, saving, error, onCancel, onSubmit }) {
+  const [form, setForm] = useState(data);
+  useEffect(() => setForm(data), [data]);
+
+  return (
+    <div style={{
+      width: 340, background: COLORS.card, borderLeft: `1px solid ${COLORS.border}`, flexShrink: 0,
+      display: "flex", flexDirection: "column", boxShadow: "-8px 0 30px rgba(15,20,40,0.06)",
+    }}>
+      <div style={{ padding: "18px 20px", borderBottom: `1px solid ${COLORS.border}`, display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 15, color: COLORS.text }}>{mode === "add" ? "Add New Role" : "Edit Role"}</div>
+          <div style={{ fontSize: 12, color: COLORS.accent, marginTop: 2 }}>Fill all required fields below</div>
+        </div>
+        <button onClick={onCancel} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.textMuted }}><X size={18} /></button>
+      </div>
+
+      <div style={{ padding: 20, flex: 1, overflowY: "auto" }}>
+        <label style={labelStyle}>Role Code*</label>
+        <input
+          value={form.code}
+          onChange={(e) => setForm({ ...form, code: e.target.value })}
+          placeholder="e.g. ADMIN"
+          style={inputStyle}
+        />
+        <label style={{ ...labelStyle, marginTop: 16 }}>Role Name*</label>
+        <input
+          value={form.name}
+          onChange={(e) => setForm({ ...form, name: e.target.value })}
+          placeholder="e.g. Administrator"
           style={inputStyle}
         />
 
@@ -1708,7 +2298,11 @@ function ProjectPulseApp() {
         {page === "department" && <DepartmentsPage />}
         {page === "country" && <CountryPage />}
         {page === "user" && <UsersPage />}
-        {inModuleShell && page !== "department" && page !== "country" && page !== "user" && <ModuleStub moduleKey={page} />}
+        {page === "project-category" && <ProjectCategoryPage />}
+        {page === "roles" && <RolesPage />}
+        {page === "project-dashboard" && <ProjectDashboardPage />}
+        {page === "resource-allocation" && <ResourceAllocationPage />}
+        {inModuleShell && !["department", "country", "user", "project-category", "roles", "project-dashboard", "resource-allocation"].includes(page) && <ModuleStub moduleKey={page} />}
       </div>
       <style>{`.spin { animation: spin 0.8s linear infinite; } @keyframes spin { to { transform: rotate(360deg); } } * { box-sizing: border-box; }`}</style>
     </div>
