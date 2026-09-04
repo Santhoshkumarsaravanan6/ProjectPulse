@@ -1,9 +1,13 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import {
   Plus, Pencil, Trash2, X, Search, AlertCircle, CheckCircle2, Loader2,
   User, FolderKanban, CalendarClock, Layers, Briefcase, Users2,
-  Percent, Clock, LayoutGrid, CalendarRange, ChevronRight, BadgeCheck,
+  Percent, Clock, LayoutGrid, CalendarRange, ChevronRight, BadgeCheck, List,
 } from "lucide-react";
+import {
+  callProjectCategoryFlow, callClientFlow, callBillingTypeFlow,
+  callUserFlow, callRoleFlow, callProjectFlow, callProjectResourceFlow,
+} from "./flows";
 
 /* ============================================================
    DESIGN TOKENS — duplicated from App.jsx to keep this file
@@ -64,87 +68,108 @@ function ConfirmModal({ title, message, confirmLabel, busy, onCancel, onConfirm 
 }
 
 /* ============================================================
-   SAMPLE DATA
-   Shaped to match the real entities so this is a drop-in swap
-   for callMasterDataFlow("ProjectCategory"/"Role", "LIST") and
-   callUserFlow("LIST") once the backend is wired.
-   TODO(backend): replace these consts with LIST calls + a new
-   entity="Project" branch (fields below) on the shared flow.
+   useProjectsWithResources — fetches Projects and Project
+   Resources from SQL (via flows.js) and merges resources into
+   their parent project client-side by projectId, since the flow
+   returns them as two separate lists (Project header rows +
+   the ProjectResource junction rows).
    ============================================================ */
-const SAMPLE_CATEGORIES = [
-  { id: 1, code: "PC1", name: "Application Development" },
-  { id: 2, code: "PC2", name: "Data Analytics" },
-  { id: 3, code: "PC3", name: "Support & Maintenance" },
-];
-const SAMPLE_USERS = [
-  { id: 1, empId: "EMP1001", firstName: "Arun", lastName: "Kumar", jobTitle: "Software Engineer" },
-  { id: 2, empId: "EMP1002", firstName: "Divya", lastName: "Menon", jobTitle: "Business Analyst" },
-  { id: 3, empId: "EMP1003", firstName: "Rahul", lastName: "Singh", jobTitle: "Project Lead" },
-  { id: 4, empId: "EMP1004", firstName: "Sneha", lastName: "Iyer", jobTitle: "QA Engineer" },
-];
-const SAMPLE_ROLES = [
-  { id: 1, code: "DEV", name: "Developer" },
-  { id: 2, code: "LEAD", name: "Project Lead" },
-  { id: 3, code: "QA", name: "QA Engineer" },
-  { id: 4, code: "BA", name: "Business Analyst" },
-];
-const SAMPLE_CLIENTS = [
-  { id: 1, code: "CL01", name: "Devoir Technologies" },
-  { id: 2, code: "CL02", name: "Nova Retail Group" },
-  { id: 3, code: "CL03", name: "BlueWave Logistics" },
-];
-const SAMPLE_BILLING_TYPES = [
-  { id: 1, code: "FP", name: "Fixed Price" },
-  { id: 2, code: "TM", name: "Time & Material" },
-  { id: 3, code: "RET", name: "Retainer" },
-];
-const SAMPLE_PROJECTS = [
-  {
-    id: 1, guid: 1, projectCode: "PRJ1001", projectName: "Customer Portal Revamp",
-    categoryId: 1, clientId: 2, billingTypeId: 2, active: true,
-    startDate: "2026-07-01", endDate: "2026-10-31",
-    resources: [
-      { id: 1, userId: 3, roleId: 2, allocationPct: 50, weeklyHours: 20, billable: true, startDate: "2026-07-01", endDate: "2026-10-31" },
-      { id: 2, userId: 1, roleId: 1, allocationPct: 100, weeklyHours: 40, billable: true, startDate: "2026-07-01", endDate: "2026-09-15" },
-      { id: 3, userId: 4, roleId: 3, allocationPct: 60, weeklyHours: 24, billable: true, startDate: "2026-08-01", endDate: "2026-10-31" },
-    ],
-  },
-  {
-    id: 2, guid: 2, projectCode: "PRJ1002", projectName: "Internal Analytics Dashboard",
-    categoryId: 2, clientId: 1, billingTypeId: 3, active: true,
-    startDate: "2026-06-15", endDate: "2026-12-15",
-    resources: [
-      { id: 4, userId: 2, roleId: 4, allocationPct: 40, weeklyHours: 16, billable: false, startDate: "2026-06-15", endDate: "2026-12-15" },
-      { id: 5, userId: 1, roleId: 1, allocationPct: 30, weeklyHours: 12, billable: true, startDate: "2026-09-01", endDate: "2026-12-15" },
-    ],
-  },
-  {
-    id: 3, guid: 3, projectCode: "PRJ1003", projectName: "Warehouse Support Contract",
-    categoryId: 3, clientId: 3, billingTypeId: 1, active: false,
-    startDate: "2026-08-01", endDate: "2026-11-30",
-    resources: [
-      { id: 6, userId: 4, roleId: 3, allocationPct: 20, weeklyHours: 8, billable: true, startDate: "2026-08-01", endDate: "2026-11-30" },
-    ],
-  },
-];
+function useProjectsWithResources() {
+  const [projects, setProjects] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  const refresh = React.useCallback(() => {
+    setLoading(true);
+    setError("");
+    return Promise.all([callProjectFlow("LIST"), callProjectResourceFlow("LIST")])
+      .then(([projRes, resRes]) => {
+        const merged = projRes.data.map((p) => ({
+          ...p,
+          resources: resRes.data.filter((r) => String(r.projectId) === String(p.guid)),
+        }));
+        setProjects(merged);
+        setLoading(false);
+        return merged;
+      })
+      .catch((e) => {
+        setError(e.message);
+        setLoading(false);
+        throw e;
+      });
+  }, []);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  return { projects, setProjects, loading, error, refresh };
+}
+
+/* ============================================================
+   useLookups — fetches Category / Client / Billing Type / User /
+   Role from SQL (via flows.js) once on mount. Each page that needs
+   dropdown data calls this and passes the result down as `lookups`.
+   Users come back from callUserFlow with {firstName, lastName, ...},
+   normalized here to add a "name" field so findName() works the
+   same way for every lookup list.
+   ============================================================ */
+function useLookups() {
+  const [categories, setCategories] = useState([]);
+  const [clients, setClients] = useState([]);
+  const [billingTypes, setBillingTypes] = useState([]);
+  const [users, setUsers] = useState([]);
+  const [roles, setRoles] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    Promise.all([
+      callProjectCategoryFlow("LIST"),
+      callClientFlow("LIST"),
+      callBillingTypeFlow("LIST"),
+      callUserFlow("LIST"),
+      callRoleFlow("LIST"),
+    ])
+      .then(([cat, cli, bill, usr, rol]) => {
+        if (cancelled) return;
+        setCategories(cat.data);
+        setClients(cli.data);
+        setBillingTypes(bill.data);
+        setUsers(usr.data.map((u) => ({ ...u, name: `${u.firstName} ${u.lastName}`.trim() })));
+        setRoles(rol.data);
+        setLoading(false);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setError(e.message);
+        setLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  return { categories, clients, billingTypes, users, roles, loading, error };
+}
 
 /* ============================================================
    LOOKUP HELPERS
    ============================================================ */
 const findName = (list, id) => list.find((x) => x.id === Number(id))?.name || "—";
-const userLabel = (id) => {
-  const u = SAMPLE_USERS.find((x) => x.id === Number(id));
+const userLabel = (users, id) => {
+  const u = users.find((x) => x.id === Number(id));
   return u ? `${u.firstName} ${u.lastName}` : "—";
 };
 const fmtDate = (d) => (d ? new Date(d).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }) : "—");
 
-let nextProjectId = 100;
-let nextResourceId = 1000;
+// Negative temp ids for resource rows added in the panel but not yet
+// saved — never sent to the backend, only used as React keys until
+// the real save assigns a guid from SQL.
+let nextTempResourceId = -1;
 
 /* ============================================================
    RESOURCE SUB-FORM ROW (used inside the Project add/edit panel)
    ============================================================ */
-function ResourceRow({ res, onChange, onRemove }) {
+function ResourceRow({ res, onChange, onRemove, lookups }) {
   return (
     <div style={{ border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: 12, marginBottom: 10, position: "relative" }}>
       <button
@@ -159,14 +184,14 @@ function ResourceRow({ res, onChange, onRemove }) {
           <label style={{ ...labelStyle, fontSize: 11, marginBottom: 4 }}>Resource (User)*</label>
           <select value={res.userId} onChange={(e) => onChange({ ...res, userId: e.target.value })} style={inputStyle}>
             <option value="">Select user</option>
-            {SAMPLE_USERS.map((u) => <option key={u.id} value={u.id}>{u.firstName} {u.lastName}</option>)}
+            {lookups.users.map((u) => <option key={u.id} value={u.id}>{u.firstName} {u.lastName}</option>)}
           </select>
         </div>
         <div>
           <label style={{ ...labelStyle, fontSize: 11, marginBottom: 4 }}>Role*</label>
           <select value={res.roleId} onChange={(e) => onChange({ ...res, roleId: e.target.value })} style={inputStyle}>
             <option value="">Select role</option>
-            {SAMPLE_ROLES.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+            {lookups.roles.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
           </select>
         </div>
       </div>
@@ -207,14 +232,14 @@ function ResourceRow({ res, onChange, onRemove }) {
 /* ============================================================
    PROJECT ADD/EDIT PANEL
    ============================================================ */
-function ProjectPanel({ mode, data, saving, error, onCancel, onSubmit }) {
+function ProjectPanel({ mode, data, saving, error, onCancel, onSubmit, lookups }) {
   const [form, setForm] = useState(data);
 
   const addResource = () => {
     setForm({
       ...form,
       resources: [...form.resources, {
-        id: nextResourceId++, userId: "", roleId: "", allocationPct: 100, weeklyHours: 40,
+        id: nextTempResourceId--, guid: "", userId: "", roleId: "", allocationPct: 100, weeklyHours: 40,
         billable: true, startDate: form.startDate, endDate: form.endDate,
       }],
     });
@@ -246,19 +271,19 @@ function ProjectPanel({ mode, data, saving, error, onCancel, onSubmit }) {
         <label style={{ ...labelStyle, marginTop: 14 }}>Project Category*</label>
         <select value={form.categoryId} onChange={(e) => setForm({ ...form, categoryId: e.target.value })} style={inputStyle}>
           <option value="">Select category</option>
-          {SAMPLE_CATEGORIES.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          {lookups.categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
 
         <label style={{ ...labelStyle, marginTop: 14 }}>Client*</label>
         <select value={form.clientId} onChange={(e) => setForm({ ...form, clientId: e.target.value })} style={inputStyle}>
           <option value="">Select client</option>
-          {SAMPLE_CLIENTS.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          {lookups.clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
 
         <label style={{ ...labelStyle, marginTop: 14 }}>Billing Type*</label>
         <select value={form.billingTypeId} onChange={(e) => setForm({ ...form, billingTypeId: e.target.value })} style={inputStyle}>
           <option value="">Select billing type</option>
-          {SAMPLE_BILLING_TYPES.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+          {lookups.billingTypes.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
         </select>
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 14 }}>
@@ -291,7 +316,7 @@ function ProjectPanel({ mode, data, saving, error, onCancel, onSubmit }) {
         {form.resources.length === 0 ? (
           <div style={{ fontSize: 12.5, color: COLORS.textMuted, textAlign: "center", padding: "14px 0" }}>No resources assigned yet.</div>
         ) : form.resources.map((res, idx) => (
-          <ResourceRow key={res.id} res={res} onChange={(next) => updateResource(idx, next)} onRemove={() => removeResource(idx)} />
+          <ResourceRow key={res.id} res={res} onChange={(next) => updateResource(idx, next)} onRemove={() => removeResource(idx)} lookups={lookups} />
         ))}
 
         {error && (
@@ -315,7 +340,7 @@ function ProjectPanel({ mode, data, saving, error, onCancel, onSubmit }) {
 /* ============================================================
    PROJECT DETAIL DRAWER (read-only view + resource table)
    ============================================================ */
-function ProjectDetailPanel({ project, onClose, onEdit }) {
+function ProjectDetailPanel({ project, onClose, onEdit, lookups }) {
   return (
     <div style={{ width: 420, background: COLORS.card, borderLeft: `1px solid ${COLORS.border}`, flexShrink: 0, display: "flex", flexDirection: "column", boxShadow: "-8px 0 30px rgba(15,20,40,0.06)" }}>
       <div style={{ padding: "18px 20px", borderBottom: `1px solid ${COLORS.border}`, display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
@@ -330,18 +355,18 @@ function ProjectDetailPanel({ project, onClose, onEdit }) {
         <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
           <StatusBadge active={project.active} />
           <span style={{ fontSize: 12, fontWeight: 600, color: COLORS.accent, background: COLORS.accentSoft, padding: "3px 10px", borderRadius: 999 }}>
-            {findName(SAMPLE_CATEGORIES, project.categoryId)}
+            {findName(lookups.categories, project.categoryId)}
           </span>
         </div>
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 18 }}>
           <div>
             <div style={{ fontSize: 11, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase" }}>Client</div>
-            <div style={{ fontSize: 13.5, color: COLORS.text, marginTop: 3 }}>{findName(SAMPLE_CLIENTS, project.clientId)}</div>
+            <div style={{ fontSize: 13.5, color: COLORS.text, marginTop: 3 }}>{findName(lookups.clients, project.clientId)}</div>
           </div>
           <div>
             <div style={{ fontSize: 11, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase" }}>Billing Type</div>
-            <div style={{ fontSize: 13.5, color: COLORS.text, marginTop: 3 }}>{findName(SAMPLE_BILLING_TYPES, project.billingTypeId)}</div>
+            <div style={{ fontSize: 13.5, color: COLORS.text, marginTop: 3 }}>{findName(lookups.billingTypes, project.billingTypeId)}</div>
           </div>
           <div>
             <div style={{ fontSize: 11, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase" }}>Start Date</div>
@@ -362,7 +387,7 @@ function ProjectDetailPanel({ project, onClose, onEdit }) {
         ) : project.resources.map((r) => (
           <div key={r.id} style={{ border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: 12, marginBottom: 8 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div style={{ fontWeight: 600, fontSize: 13, color: COLORS.text }}>{userLabel(r.userId)}</div>
+              <div style={{ fontWeight: 600, fontSize: 13, color: COLORS.text }}>{userLabel(lookups.users, r.userId)}</div>
               {r.billable ? (
                 <span style={{ fontSize: 11, fontWeight: 600, color: COLORS.success, display: "flex", alignItems: "center", gap: 4 }}>
                   <BadgeCheck size={12} /> Billable
@@ -371,7 +396,7 @@ function ProjectDetailPanel({ project, onClose, onEdit }) {
                 <span style={{ fontSize: 11, fontWeight: 600, color: COLORS.textMuted }}>Non-billable</span>
               )}
             </div>
-            <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 2 }}>{findName(SAMPLE_ROLES, r.roleId)}</div>
+            <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 2 }}>{findName(lookups.roles, r.roleId)}</div>
             <div style={{ display: "flex", gap: 14, marginTop: 8, fontSize: 12, color: COLORS.text }}>
               <span style={{ display: "flex", alignItems: "center", gap: 4 }}><Percent size={12} color={COLORS.textMuted} /> {r.allocationPct}%</span>
               <span style={{ display: "flex", alignItems: "center", gap: 4 }}><Clock size={12} color={COLORS.textMuted} /> {r.weeklyHours} hrs/wk</span>
@@ -395,8 +420,10 @@ function ProjectDetailPanel({ project, onClose, onEdit }) {
    PROJECT DASHBOARD PAGE
    ============================================================ */
 export function ProjectDashboardPage() {
-  const [projects, setProjects] = useState(SAMPLE_PROJECTS);
+  const lookups = useLookups();
+  const { projects, loading, error: loadError, refresh } = useProjectsWithResources();
   const [search, setSearch] = useState("");
+  const [view, setView] = useState("cards"); // 'cards' | 'table'
   const [panel, setPanel] = useState(null); // { mode: 'add'|'edit', data }
   const [detail, setDetail] = useState(null); // selected project for drawer
   const [saving, setSaving] = useState(false);
@@ -421,36 +448,78 @@ export function ProjectDashboardPage() {
 
   const openAdd = () => setPanel({
     mode: "add",
-    data: { id: null, guid: "", projectCode: "", projectName: "", categoryId: "", clientId: "", billingTypeId: "", startDate: "", endDate: "", active: true, resources: [] },
+    data: { guid: "", projectCode: "", projectName: "", categoryId: "", clientId: "", billingTypeId: "", startDate: "", endDate: "", active: true, resources: [] },
+    originalResourceGuids: [],
   });
-  const openEdit = (p) => setPanel({ mode: "edit", data: JSON.parse(JSON.stringify(p)) });
+  const openEdit = (p) => setPanel({
+    mode: "edit",
+    data: JSON.parse(JSON.stringify(p)),
+    originalResourceGuids: p.resources.map((r) => r.guid).filter((g) => g !== "" && g !== undefined),
+  });
 
-  const submitPanel = (form) => {
+  const submitPanel = (form, originalResourceGuids = []) => {
     if (!form.projectCode?.trim() || !form.projectName?.trim() || !form.categoryId || !form.startDate || !form.endDate) {
       setErr("Project Code, Name, Category and Dates are required.");
       return;
     }
     setSaving(true);
     setErr("");
-    setTimeout(() => { // TODO(backend): replace with callMasterDataFlow("Project", action, form)
-      if (form.id) {
-        setProjects((prev) => prev.map((p) => (p.id === form.id ? form : p)));
-        setToast("Project updated.");
-      } else {
-        const newProject = { ...form, id: nextProjectId, guid: nextProjectId };
-        nextProjectId++;
-        setProjects((prev) => [newProject, ...prev]);
-        setToast("Project added.");
-      }
-      setSaving(false);
-      setPanel(null);
-    }, 400);
+    const projectAction = form.guid ? "EDIT" : "CREATE";
+    callProjectFlow(projectAction, form)
+      .then((projRes) => {
+        // Resolve the project's guid: already known on EDIT; on CREATE, find
+        // the freshly inserted row by its unique projectCode in the refreshed list.
+        let projectGuid = form.guid;
+        if (!projectGuid) {
+          const match = projRes.data.find((p) => p.projectCode === form.projectCode.trim());
+          projectGuid = match ? match.guid : "";
+        }
+
+        // Sync resources: CREATE new rows (no guid), EDIT existing rows (has guid),
+        // DELETE rows that were on the project originally but got removed in the panel.
+        const currentGuids = form.resources.map((r) => r.guid).filter((g) => g !== "" && g !== undefined);
+        const removedGuids = originalResourceGuids.filter((g) => !currentGuids.includes(g));
+
+        const resourceOps = [
+          ...form.resources.map((r) => callProjectResourceFlow(r.guid ? "EDIT" : "CREATE", { ...r, projectId: projectGuid })),
+          ...removedGuids.map((guid) =>
+            callProjectResourceFlow("DELETE", { guid }).catch((e) => {
+              console.warn("Resource delete failed (continuing save):", e.message);
+            })
+          ),
+        ];
+        return Promise.all(resourceOps);
+      })
+      .then(() => refresh())
+      .then(() => {
+        setSaving(false);
+        setPanel(null);
+        setToast(form.guid ? "Project updated." : "Project added.");
+      })
+      .catch((e) => {
+        setSaving(false);
+        setErr(e.message);
+      });
   };
 
   const confirmDeleteRow = () => {
-    setProjects((prev) => prev.filter((p) => p.id !== confirmDelete.id));
-    setToast("Project deleted.");
-    setConfirmDelete(null);
+    if (!confirmDelete) return;
+    // Resources carry the FK to Project, so they must be removed first.
+    // If a resource is already gone (stale guid, deleted out-of-band, etc.)
+    // don't let that block deleting the Project itself.
+    const deleteResources = confirmDelete.resources.map((r) =>
+      callProjectResourceFlow("DELETE", { guid: r.guid }).catch((e) => {
+        console.warn("Resource delete failed (continuing to delete project):", e.message);
+      })
+    );
+    Promise.all(deleteResources)
+      .then(() => callProjectFlow("DELETE", { guid: confirmDelete.guid }))
+      .then(() => refresh())
+      .then(() => {
+        setToast("Project deleted.");
+        setConfirmDelete(null);
+      })
+      .catch((e) => setToast(`Delete failed: ${e.message}`));
   };
 
   return (
@@ -465,6 +534,18 @@ export function ProjectDashboardPage() {
             <Plus size={15} /> Add Project
           </button>
         </div>
+
+        {loadError && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, background: COLORS.dangerSoft, color: COLORS.danger, borderRadius: 10, padding: "10px 14px", fontSize: 13, marginBottom: 16 }}>
+            <AlertCircle size={15} /> Couldn't load projects: {loadError}
+            <button onClick={refresh} style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 5, border: "none", background: "none", color: COLORS.danger, fontWeight: 700, fontSize: 12.5, cursor: "pointer" }}>Retry</button>
+          </div>
+        )}
+        {lookups.error && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, background: COLORS.dangerSoft, color: COLORS.danger, borderRadius: 10, padding: "10px 14px", fontSize: 13, marginBottom: 16 }}>
+            <AlertCircle size={15} /> Couldn't load dropdown data (category/client/billing type/user/role): {lookups.error}
+          </div>
+        )}
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 14, marginBottom: 18 }}>
           {kpis.map((k) => {
@@ -481,13 +562,70 @@ export function ProjectDashboardPage() {
           })}
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: 8, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "9px 12px", width: 300, marginBottom: 16, background: COLORS.card }}>
-          <Search size={14} color={COLORS.textMuted} />
-          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by project code or name" style={{ border: "none", outline: "none", fontSize: 13, width: "100%", fontFamily: "Inter, sans-serif" }} />
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "9px 12px", width: 300, background: COLORS.card }}>
+            <Search size={14} color={COLORS.textMuted} />
+            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by project code or name" style={{ border: "none", outline: "none", fontSize: 13, width: "100%", fontFamily: "Inter, sans-serif" }} />
+          </div>
+          <div style={{ display: "flex", border: `1px solid ${COLORS.border}`, borderRadius: 8, overflow: "hidden" }}>
+            <button onClick={() => setView("cards")} style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", border: "none", background: view === "cards" ? COLORS.accent : "#fff", color: view === "cards" ? "#fff" : COLORS.text, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
+              <LayoutGrid size={13} /> Cards
+            </button>
+            <button onClick={() => setView("table")} style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", border: "none", background: view === "table" ? COLORS.accent : "#fff", color: view === "table" ? "#fff" : COLORS.text, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
+              <List size={13} /> Table
+            </button>
+          </div>
         </div>
 
+        {view === "table" ? (
+          <div style={{ ...cardStyle, padding: 0, overflow: "hidden" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr style={{ background: COLORS.bg }}>
+                  {["Project Code", "Project Name", "Category", "Client", "Billing Type", "Duration", "Resources", "Status", ""].map((h) => (
+                    <th key={h} style={{ textAlign: "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {loading ? (
+                  <tr><td colSpan={9} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>
+                    <Loader2 size={18} className="spin" style={{ verticalAlign: "middle", marginRight: 8 }} /> Loading projects…
+                  </td></tr>
+                ) : filtered.length === 0 ? (
+                  <tr><td colSpan={9} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>No projects match your search.</td></tr>
+                ) : filtered.map((p, i) => (
+                  <tr key={p.id} style={{ borderTop: `1px solid ${COLORS.border}`, background: i % 2 ? "#FAFBFD" : "#fff", cursor: "pointer" }} onClick={() => setDetail(p)}>
+                    <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text, fontWeight: 600 }}>{p.projectCode}</td>
+                    <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text }}>{p.projectName}</td>
+                    <td style={{ padding: "11px 16px", fontSize: 13, color: COLORS.text }}>{findName(lookups.categories, p.categoryId)}</td>
+                    <td style={{ padding: "11px 16px", fontSize: 13, color: COLORS.text }}>{findName(lookups.clients, p.clientId)}</td>
+                    <td style={{ padding: "11px 16px", fontSize: 13, color: COLORS.text }}>{findName(lookups.billingTypes, p.billingTypeId)}</td>
+                    <td style={{ padding: "11px 16px", fontSize: 12, color: COLORS.textMuted }}>{fmtDate(p.startDate)} → {fmtDate(p.endDate)}</td>
+                    <td style={{ padding: "11px 16px", fontSize: 13, color: COLORS.text }}>{p.resources.length}</td>
+                    <td style={{ padding: "11px 16px" }}><StatusBadge active={p.active} /></td>
+                    <td style={{ padding: "11px 16px", textAlign: "right" }} onClick={(e) => e.stopPropagation()}>
+                      <div style={{ display: "inline-flex", gap: 8 }}>
+                        <button onClick={() => openEdit(p)} style={{ display: "inline-flex", alignItems: "center", gap: 6, background: COLORS.accentSoft, color: COLORS.accent, border: "none", borderRadius: 7, padding: "6px 11px", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
+                          <Pencil size={12} /> Edit
+                        </button>
+                        <button onClick={() => setConfirmDelete(p)} style={{ display: "inline-flex", alignItems: "center", gap: 6, background: COLORS.dangerSoft, color: COLORS.danger, border: "none", borderRadius: 7, padding: "6px 11px", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
+                          <Trash2 size={12} /> Delete
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 14 }}>
-          {filtered.length === 0 ? (
+          {loading ? (
+            <div style={{ ...cardStyle, gridColumn: "1/-1", textAlign: "center", color: COLORS.textMuted, padding: 40 }}>
+              <Loader2 size={18} className="spin" style={{ verticalAlign: "middle", marginRight: 8 }} /> Loading projects…
+            </div>
+          ) : filtered.length === 0 ? (
             <div style={{ ...cardStyle, gridColumn: "1/-1", textAlign: "center", color: COLORS.textMuted, padding: 40 }}>No projects match your search.</div>
           ) : filtered.map((p) => (
             <div key={p.id} style={{ ...cardStyle, cursor: "pointer", display: "flex", flexDirection: "column", gap: 10 }} onClick={() => setDetail(p)}>
@@ -501,10 +639,10 @@ export function ProjectDashboardPage() {
 
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                 <span style={{ fontSize: 11.5, fontWeight: 600, color: COLORS.accent, background: COLORS.accentSoft, padding: "3px 9px", borderRadius: 999 }}>
-                  {findName(SAMPLE_CATEGORIES, p.categoryId)}
+                  {findName(lookups.categories, p.categoryId)}
                 </span>
                 <span style={{ fontSize: 11.5, fontWeight: 600, color: COLORS.textMuted, background: COLORS.bg, padding: "3px 9px", borderRadius: 999 }}>
-                  {findName(SAMPLE_CLIENTS, p.clientId)}
+                  {findName(lookups.clients, p.clientId)}
                 </span>
               </div>
 
@@ -515,12 +653,12 @@ export function ProjectDashboardPage() {
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4, paddingTop: 10, borderTop: `1px solid ${COLORS.border}` }}>
                 <div style={{ display: "flex", alignItems: "center", gap: -6 }}>
                   {p.resources.slice(0, 4).map((r, i) => (
-                    <span key={r.id} title={userLabel(r.userId)} style={{
+                    <span key={r.id} title={userLabel(lookups.users, r.userId)} style={{
                       width: 26, height: 26, borderRadius: "50%", background: CHART_PALETTE[i % CHART_PALETTE.length],
                       color: "#fff", fontSize: 10.5, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center",
                       border: "2px solid #fff", marginLeft: i === 0 ? 0 : -8,
                     }}>
-                      {userLabel(r.userId).split(" ").map((w) => w[0]).join("")}
+                      {userLabel(lookups.users, r.userId).split(" ").map((w) => w[0]).join("")}
                     </span>
                   ))}
                   {p.resources.length === 0 && <span style={{ fontSize: 11.5, color: COLORS.textMuted }}>No resources</span>}
@@ -533,14 +671,15 @@ export function ProjectDashboardPage() {
             </div>
           ))}
         </div>
+        )}
       </div>
 
       {panel && (
-        <ProjectPanel mode={panel.mode} data={panel.data} saving={saving} error={err} onCancel={() => { setPanel(null); setErr(""); }} onSubmit={submitPanel} />
+        <ProjectPanel mode={panel.mode} data={panel.data} saving={saving} error={err} onCancel={() => { setPanel(null); setErr(""); }} onSubmit={(form) => submitPanel(form, panel.originalResourceGuids)} lookups={lookups} />
       )}
 
       {detail && !panel && (
-        <ProjectDetailPanel project={detail} onClose={() => setDetail(null)} onEdit={() => { openEdit(detail); setDetail(null); }} />
+        <ProjectDetailPanel project={detail} onClose={() => setDetail(null)} onEdit={() => { openEdit(detail); setDetail(null); }} lookups={lookups} />
       )}
 
       {confirmDelete && (
@@ -566,7 +705,7 @@ export function ProjectDashboardPage() {
 /* ============================================================
    RESOURCE ALLOCATION PAGE — flat grid + Gantt-style timeline
    ============================================================ */
-function AllocationPanel({ data, saving, error, onCancel, onSubmit }) {
+function AllocationPanel({ data, saving, error, onCancel, onSubmit, lookups, projects }) {
   const [form, setForm] = useState(data);
   return (
     <div style={{ width: 380, background: COLORS.card, borderLeft: `1px solid ${COLORS.border}`, flexShrink: 0, display: "flex", flexDirection: "column", boxShadow: "-8px 0 30px rgba(15,20,40,0.06)" }}>
@@ -581,19 +720,19 @@ function AllocationPanel({ data, saving, error, onCancel, onSubmit }) {
         <label style={labelStyle}>Project*</label>
         <select value={form.projectId} onChange={(e) => setForm({ ...form, projectId: e.target.value })} style={inputStyle}>
           <option value="">Select project</option>
-          {SAMPLE_PROJECTS.map((p) => <option key={p.id} value={p.id}>{p.projectName}</option>)}
+          {projects.map((p) => <option key={p.id} value={p.id}>{p.projectName}</option>)}
         </select>
 
         <label style={{ ...labelStyle, marginTop: 14 }}>Resource (User)*</label>
         <select value={form.userId} onChange={(e) => setForm({ ...form, userId: e.target.value })} style={inputStyle}>
           <option value="">Select user</option>
-          {SAMPLE_USERS.map((u) => <option key={u.id} value={u.id}>{u.firstName} {u.lastName}</option>)}
+          {lookups.users.map((u) => <option key={u.id} value={u.id}>{u.firstName} {u.lastName}</option>)}
         </select>
 
         <label style={{ ...labelStyle, marginTop: 14 }}>Role*</label>
         <select value={form.roleId} onChange={(e) => setForm({ ...form, roleId: e.target.value })} style={inputStyle}>
           <option value="">Select role</option>
-          {SAMPLE_ROLES.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+          {lookups.roles.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
         </select>
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 14 }}>
@@ -638,7 +777,7 @@ function AllocationPanel({ data, saving, error, onCancel, onSubmit }) {
   );
 }
 
-function TimelineView({ allocations }) {
+function TimelineView({ allocations, lookups }) {
   const { rangeStart, totalDays, months } = useMemo(() => {
     if (allocations.length === 0) return { rangeStart: new Date(), totalDays: 1, months: [] };
     const starts = allocations.map((a) => new Date(a.startDate));
@@ -685,8 +824,8 @@ function TimelineView({ allocations }) {
       {allocations.map((a, i) => (
         <div key={a.id} style={{ display: "flex", alignItems: "center", borderBottom: `1px solid ${COLORS.border}`, background: i % 2 ? "#FAFBFD" : "#fff" }}>
           <div style={{ width: 260, flexShrink: 0, padding: "10px 16px" }}>
-            <div style={{ fontSize: 12.5, fontWeight: 600, color: COLORS.text }}>{userLabel(a.userId)}</div>
-            <div style={{ fontSize: 11, color: COLORS.textMuted }}>{a.projectCode} • {findName(SAMPLE_ROLES, a.roleId)}</div>
+            <div style={{ fontSize: 12.5, fontWeight: 600, color: COLORS.text }}>{userLabel(lookups.users, a.userId)}</div>
+            <div style={{ fontSize: 11, color: COLORS.textMuted }}>{a.projectCode} • {findName(lookups.roles, a.roleId)}</div>
           </div>
           <div style={{ flex: 1, position: "relative", height: 40 }}>
             <div title={`${a.projectName}: ${fmtDate(a.startDate)} → ${fmtDate(a.endDate)}`} style={{
@@ -704,7 +843,8 @@ function TimelineView({ allocations }) {
 }
 
 export function ResourceAllocationPage() {
-  const [projects, setProjects] = useState(SAMPLE_PROJECTS);
+  const lookups = useLookups();
+  const { projects, loading, error: loadError, refresh } = useProjectsWithResources();
   const [view, setView] = useState("grid"); // 'grid' | 'timeline'
   const [search, setSearch] = useState("");
   const [panel, setPanel] = useState(null);
@@ -714,12 +854,12 @@ export function ResourceAllocationPage() {
   const [confirmDelete, setConfirmDelete] = useState(null);
 
   const allocations = useMemo(() => (
-    projects.flatMap((p) => p.resources.map((r) => ({ ...r, projectId: p.id, projectName: p.projectName, projectCode: p.projectCode })))
+    projects.flatMap((p) => p.resources.map((r) => ({ ...r, projectId: p.guid, projectName: p.projectName, projectCode: p.projectCode })))
   ), [projects]);
 
   const filtered = allocations.filter((a) => {
     const q = search.toLowerCase();
-    return userLabel(a.userId).toLowerCase().includes(q) || a.projectName.toLowerCase().includes(q) || a.projectCode.toLowerCase().includes(q);
+    return userLabel(lookups.users, a.userId).toLowerCase().includes(q) || a.projectName.toLowerCase().includes(q) || a.projectCode.toLowerCase().includes(q);
   });
 
   const openAdd = () => setPanel({
@@ -733,24 +873,28 @@ export function ResourceAllocationPage() {
     }
     setSaving(true);
     setErr("");
-    setTimeout(() => { // TODO(backend): replace with a callProjectResourceFlow("CREATE", form) style call
-      setProjects((prev) => prev.map((p) => (
-        p.id === Number(form.projectId)
-          ? { ...p, resources: [...p.resources, { ...form, id: nextResourceId++ }] }
-          : p
-      )));
-      setSaving(false);
-      setPanel(null);
-      setToast("Resource allocated.");
-    }, 400);
+    callProjectResourceFlow("CREATE", form)
+      .then(() => refresh())
+      .then(() => {
+        setSaving(false);
+        setPanel(null);
+        setToast("Resource allocated.");
+      })
+      .catch((e) => {
+        setSaving(false);
+        setErr(e.message);
+      });
   };
 
   const confirmDeleteRow = () => {
-    setProjects((prev) => prev.map((p) => (
-      p.id === confirmDelete.projectId ? { ...p, resources: p.resources.filter((r) => r.id !== confirmDelete.id) } : p
-    )));
-    setToast("Allocation removed.");
-    setConfirmDelete(null);
+    if (!confirmDelete) return;
+    callProjectResourceFlow("DELETE", { guid: confirmDelete.guid })
+      .then(() => refresh())
+      .then(() => {
+        setToast("Allocation removed.");
+        setConfirmDelete(null);
+      })
+      .catch((e) => setToast(`Remove failed: ${e.message}`));
   };
 
   const totalHours = filtered.reduce((s, a) => s + Number(a.weeklyHours || 0), 0);
@@ -774,6 +918,18 @@ export function ResourceAllocationPage() {
             <Plus size={15} /> Add Allocation
           </button>
         </div>
+
+        {loadError && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, background: COLORS.dangerSoft, color: COLORS.danger, borderRadius: 10, padding: "10px 14px", fontSize: 13, marginBottom: 16 }}>
+            <AlertCircle size={15} /> Couldn't load allocations: {loadError}
+            <button onClick={refresh} style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 5, border: "none", background: "none", color: COLORS.danger, fontWeight: 700, fontSize: 12.5, cursor: "pointer" }}>Retry</button>
+          </div>
+        )}
+        {lookups.error && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, background: COLORS.dangerSoft, color: COLORS.danger, borderRadius: 10, padding: "10px 14px", fontSize: 13, marginBottom: 16 }}>
+            <AlertCircle size={15} /> Couldn't load dropdown data (project/user/role): {lookups.error}
+          </div>
+        )}
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 14, marginBottom: 16 }}>
           {kpis.map((k) => {
@@ -816,13 +972,17 @@ export function ResourceAllocationPage() {
                 </tr>
               </thead>
               <tbody>
-                {filtered.length === 0 ? (
+                {loading ? (
+                  <tr><td colSpan={8} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>
+                    <Loader2 size={18} className="spin" style={{ verticalAlign: "middle", marginRight: 8 }} /> Loading allocations…
+                  </td></tr>
+                ) : filtered.length === 0 ? (
                   <tr><td colSpan={8} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>No allocations match your search.</td></tr>
                 ) : filtered.map((a, i) => (
                   <tr key={a.id} style={{ borderTop: `1px solid ${COLORS.border}`, background: i % 2 ? "#FAFBFD" : "#fff" }}>
-                    <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text, fontWeight: 600 }}>{userLabel(a.userId)}</td>
+                    <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text, fontWeight: 600 }}>{userLabel(lookups.users, a.userId)}</td>
                     <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text }}>{a.projectName} <span style={{ color: COLORS.textMuted }}>({a.projectCode})</span></td>
-                    <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text }}>{findName(SAMPLE_ROLES, a.roleId)}</td>
+                    <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text }}>{findName(lookups.roles, a.roleId)}</td>
                     <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text }}>{a.allocationPct}%</td>
                     <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text }}>{a.weeklyHours} hrs</td>
                     <td style={{ padding: "11px 16px" }}><StatusBadge active={a.billable} onLabel="Billable" offLabel="Non-billable" /></td>
@@ -838,16 +998,16 @@ export function ResourceAllocationPage() {
             </table>
           </div>
         ) : (
-          <TimelineView allocations={filtered} />
+          <TimelineView allocations={filtered} lookups={lookups} />
         )}
       </div>
 
-      {panel && <AllocationPanel data={panel} saving={saving} error={err} onCancel={() => { setPanel(null); setErr(""); }} onSubmit={submitPanel} />}
+      {panel && <AllocationPanel data={panel} saving={saving} error={err} onCancel={() => { setPanel(null); setErr(""); }} onSubmit={submitPanel} lookups={lookups} projects={projects} />}
 
       {confirmDelete && (
         <ConfirmModal
           title="Remove this allocation?"
-          message={`${userLabel(confirmDelete.userId)} will be unassigned from ${confirmDelete.projectName}.`}
+          message={`${userLabel(lookups.users, confirmDelete.userId)} will be unassigned from ${confirmDelete.projectName}.`}
           confirmLabel="Remove" busy={false}
           onCancel={() => setConfirmDelete(null)}
           onConfirm={confirmDeleteRow}
