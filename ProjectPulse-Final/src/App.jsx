@@ -3,12 +3,11 @@ import {
   LayoutDashboard, ChevronDown, LogOut, Search, Plus, Pencil, Trash2,
   X, Building2, Layers, Globe2, User, Handshake, CheckCircle2,
   CalendarClock, Briefcase, Contact, Shield, Receipt, UserCog, Flag,
-  Loader2, RefreshCw, AlertCircle, TrendingUp, Users2, FolderKanban,
-  ClipboardList
+  Loader2, RefreshCw, AlertCircle, Users2, FolderKanban,
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  LineChart, Line, PieChart, Pie, Cell, Legend
+  PieChart, Pie, Cell, Legend
 } from "recharts";
 import { ProjectDashboardPage, ResourceAllocationPage } from "./ProjectAllocation";
 
@@ -43,247 +42,46 @@ const DEMO_PASSWORD = "Devoir@123";
 /* ============================================================
    MODULE REGISTRY — mirrors the Power Apps left nav exactly
    ============================================================ */
-const MODULES = [
-  { key: "project-dashboard", label: "Project Dashboard", icon: FolderKanban, color: "#22A06B", implemented: true },
-  { key: "resource-allocation", label: "Resource Allocation", icon: Users2, color: "#F59E0B", implemented: true },
+const ADMIN_MODULES = [
   { key: "department", label: "Department", icon: Building2, color: "#3B6FE0", implemented: true },
   { key: "project-category", label: "Project Category", icon: Layers, color: "#8B5CF6", implemented: true },
   { key: "country", label: "Country", icon: Globe2, color: "#0EA5A4", implemented: true },
   { key: "user", label: "User", icon: User, color: "#3B6FE0", implemented: true },
-  { key: "project-deal-status", label: "Project Deal Status", icon: Handshake, color: "#22A06B" },
+  { key: "project-deal-status", label: "Project Deal Status", icon: Handshake, color: "#22A06B", implemented: true },
   { key: "approval-status", label: "Approval Status", icon: CheckCircle2, color: "#F59E0B" },
-  { key: "billing-period", label: "Billing Period", icon: CalendarClock, color: "#8B5CF6" },
-  { key: "client", label: "Client", icon: Briefcase, color: "#EAB308" },
-  { key: "client-contact", label: "Client Contact", icon: Contact, color: "#3B6FE0" },
+  { key: "billing-type", label: "Billing Type", icon: CalendarClock, color: "#8B5CF6", implemented: true },
+  { key: "client", label: "Client", icon: Briefcase, color: "#EAB308", implemented: true },
   { key: "roles", label: "Roles", icon: Shield, color: "#8B5CF6", implemented: true },
   { key: "invoice-status", label: "Invoice Status", icon: Receipt, color: "#3B6FE0" },
   { key: "user-roles", label: "User Roles", icon: UserCog, color: "#0EA5A4" },
   { key: "project-status", label: "Project Status", icon: Flag, color: "#E11D48" },
 ];
 
-/* ============================================================
-   POWER AUTOMATE FLOW INTEGRATION
-   Real HTTP-triggered flow. In dev, calls go through the Vite
-   proxy path "/flow" (see vite.config.js) to avoid CORS; in
-   production point this at your own proxy/Azure Function that
-   forwards to the URL below.
-
-   Schema: ONE flow now serves every master-data module (Department,
-   Country, ProjectCategory, and future ones) via an "entity" switch,
-   since they all share the same shape (code / name / active). Paste
-   this into the flow trigger's "Request Body JSON Schema" so Power
-   Automate generates typed dynamic content for each field:
-
-   {
-     "type": "object",
-     "properties": {
-       "entity": { "type": "string" },
-       "guid":   { "type": "integer" },
-       "action": { "type": "string" },
-       "code":   { "type": "string" },
-       "name":   { "type": "string" },
-       "active": { "type": "boolean" }
-     }
-   }
-
-     - "entity" -> "Department" | "Country" | "ProjectCategory" (add more
-                   as new modules come online). Switch on
-                   triggerBody()?['entity'] at the top of the flow to
-                   route into the right table's branch.
-     - "guid"   -> the SQL row's identity/primary key column (an
-                   integer, e.g. 1, 2, 3 — despite the name, this is
-                   NOT a Dataverse GUID for this source, it's a plain
-                   int identity column: DepartmentId / CountryId /
-                   CategoryId). 0 on CREATE/LIST since the database
-                   generates it; required on EDIT/DELETE so the flow's
-                   Update row / Delete row steps know exactly which
-                   record to target (use "Id" = triggerBody()?['guid']).
-     - "action" -> "LIST" | "CREATE" | "EDIT" | "DELETE". Nest this
-                   switch inside each entity branch:
-                     LIST   -> skip Create/Update/Delete, just return rows
-                     CREATE -> Insert a new row, then return the refreshed list
-                     EDIT   -> Update a row (by guid), then return the list
-                     DELETE -> Delete a row (by guid), then return the list
-     - "code" / "name" / "active" -> maps to:
-                   Department      -> Department Code / Department Name / Status
-                   Country         -> CountryCode / CountryName / IsActive
-                   ProjectCategory -> Category Code / Category Name / IsActive
-
-   Flow response shape (as actually returned, per entity):
-   {
-     "body": [
-       { "Department Code": "A01", "Department Name": "Power Automate", "Status": false, "guid": 1 },
-       { "Department Code": "test", "Department Name": "test", "Status": true, "guid": 2 }
-     ]
-   }
-   {
-     "body": [
-       { "CountryCode": "IN", "CountryName": "India", "IsActive": true, "guid": 1 }
-     ]
-   }
-   {
-     "body": [
-       { "Category Code": "DEV", "Category Name": "Development", "IsActive": true, "guid": 1 }
-     ]
-   }
-   ============================================================ */
-const FLOW_URL_DIRECT =
-  "https://93cd50265ecdea7aa4fd295cb67b42.d4.environment.api.powerplatform.com:443/powerautomate/automations/direct/cu/22/workflows/fa6a24a2ca4b4db498b9eb939349553a/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=YBkFBfYF1FPY_DHWRI0JSpXmHw0ST46XX93XUHeXvwc";
-
-// The app always calls the relative "/flow" path. In dev, Vite's
-// proxy (vite.config.js) forwards it. In production on Netlify,
-// a redirect rule in netlify.toml does the same job — so no code
-// branching is needed between environments.
-const FLOW_URL = "/flow";
-
-// Field-name maps so the one generic function can normalize any
-// entity's SQL column names into the same { code, name, active } shape
-// the grids/panels use.
-const ENTITY_FIELD_MAP = {
-  Department: { codeCol: "Department Code", nameCol: "Department Name", activeCol: "Status" },
-  Country: { codeCol: "CountryCode", nameCol: "CountryName", activeCol: "IsActive" },
-  ProjectCategory: { codeCol: "CategoryCode", nameCol: "CategoryName", activeCol: "IsActive" },
-  Role: { codeCol: "Role Code", nameCol: "Role Name", activeCol: "IsActive" },
-};
-
-function callMasterDataFlow(entity, action, item = {}) {
-  // entity: "Department" | "Country" | "ProjectCategory" — routes to the
-  //         right table inside the single shared flow.
-  // action: "LIST" | "CREATE" | "EDIT" | "DELETE"
-  // "guid" is a plain integer identity column (DepartmentId / CountryId /
-  // CategoryId), not a string GUID — 0 means "no id yet" (CREATE/LIST),
-  // and a real positive integer is sent for EDIT/DELETE.
-  const guidValue =
-    item.guid === "" || item.guid === null || item.guid === undefined
-      ? 0
-      : Number(item.guid);
-
-  const body = {
-    entity,
-    guid: guidValue,
-    action,
-    code: item.code || "",
-    name: item.name || "",
-    active: !!item.active,
-  };
-
-  return fetch(FLOW_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  }).then(async (res) => {
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      throw new Error(`Flow returned ${res.status}${text ? `: ${text.slice(0, 200)}` : ""}`);
-    }
-    const json = await res.json();
-    console.log(`Flow raw response [${entity}]:`, json); // TEMP: check DevTools console to confirm shape
-    // The flow's Select step returns entity-specific column names
-    // ("Department Code" vs "CountryCode" vs "Category Code", etc.) plus
-    // a shared "guid" (a plain integer identity) — normalize both shapes
-    // the same way.
-    const { codeCol, nameCol, activeCol } = ENTITY_FIELD_MAP[entity];
-    const list = Array.isArray(json) ? json : (json.body || json.data || json.value || []);
-    const normalized = list.map((d, i) => {
-      const rawGuid = d.guid ?? d.id;
-      const guid = rawGuid !== undefined && rawGuid !== null && rawGuid !== "" ? Number(rawGuid) : "";
-      return {
-        id: guid !== "" ? guid : (d[codeCol] || String(i)),
-        guid,
-        code: d[codeCol] ?? d.code ?? "",
-        name: d[nameCol] ?? d.name ?? "",
-        active: !!(d[activeCol] ?? d.active ?? false),
-      };
-    });
-    return { success: true, data: normalized };
-  });
-}
-
-// Thin, named wrappers — keeps call sites in each page readable
-// (callDepartmentFlow("LIST") reads better than the raw entity string
-// scattered everywhere) while both funnel through the one flow call.
-const callDepartmentFlow = (action, department) => callMasterDataFlow("Department", action, department);
-const callCountryFlow = (action, country) => callMasterDataFlow("Country", action, country);
-const callProjectCategoryFlow = (action, category) => callMasterDataFlow("ProjectCategory", action, category);
-const callRoleFlow = (action, role) => callMasterDataFlow("Role", action, role);
-
-/* ============================================================
-   USER FLOW — separate from callMasterDataFlow because the
-   Users table has its own field set (EmpID, FirstName, LastName,
-   Gender, JobTitle, DepartmentID) instead of the generic
-   code/name/active shape.
-
-   Same "entity" switch flow, entity="User". Body sent:
-   { entity:"User", guid, action, empId, firstName, lastName,
-     gender, jobTitle, departmentId, active }
-
-   Expected row shape back from flow (per your CREATE TABLE Users):
-   { UserID, EmpID, FirstName, LastName, Gender, JobTitle,
-     DepartmentID, IsActive }
-   ============================================================ */
-function callUserFlow(action, item = {}) {
-  const guidValue =
-    item.guid === "" || item.guid === null || item.guid === undefined ? 0 : Number(item.guid);
-
-  const body = {
-    entity: "User",
-    guid: guidValue,
-    action,
-    empId: item.empId || "",
-    firstName: item.firstName || "",
-    lastName: item.lastName || "",
-    gender: item.gender || "",
-    jobTitle: item.jobTitle || "",
-    departmentId: item.departmentId ? Number(item.departmentId) : 0,
-    active: !!item.active,
-  };
-
-  return fetch(FLOW_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  }).then(async (res) => {
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      throw new Error(`Flow returned ${res.status}${text ? `: ${text.slice(0, 200)}` : ""}`);
-    }
-    const json = await res.json();
-    console.log("Flow raw response [User]:", json);
-    const list = Array.isArray(json) ? json : (json.body || json.data || json.value || []);
-    const normalized = list.map((d, i) => {
-      const rawGuid = d.UserID ?? d.guid ?? d.id;
-      const guid = rawGuid !== undefined && rawGuid !== null && rawGuid !== "" ? Number(rawGuid) : "";
-      return {
-        id: guid !== "" ? guid : String(i),
-        guid,
-        empId: d.EmpID ?? d.empId ?? "",
-        firstName: d.FirstName ?? d.firstName ?? "",
-        lastName: d.LastName ?? d.lastName ?? "",
-        gender: d.Gender ?? d.gender ?? "",
-        jobTitle: d.JobTitle ?? d.jobTitle ?? "",
-        departmentId: d.DepartmentID ?? d.departmentId ?? "",
-        active: !!(d.IsActive ?? d.active ?? false),
-      };
-    });
-    return { success: true, data: normalized };
-  });
-}
-
-/* ============================================================
-   SAMPLE DASHBOARD DATA
-   ============================================================ */
-const deptHeadcount = [
-  { name: "IT", value: 42 }, { name: "HR", value: 18 }, { name: "ERP", value: 24 },
-  { name: "Data Analytics", value: 31 }, { name: "Power BI", value: 15 }, { name: "PAD", value: 9 },
+const PROJECT_MODULES = [
+  { key: "project-dashboard", label: "Project Dashboard", icon: FolderKanban, color: "#22A06B", implemented: true },
+  { key: "resource-allocation", label: "Resource Allocation", icon: Users2, color: "#F59E0B", implemented: true },
 ];
-const monthlyTransactions = [
-  { month: "Mar", value: 120 }, { month: "Apr", value: 148 }, { month: "May", value: 132 },
-  { month: "Jun", value: 176 }, { month: "Jul", value: 190 }, { month: "Aug", value: 210 },
-];
-const approvalSplit = [
-  { name: "Approved", value: 62, color: COLORS.success },
-  { name: "Pending", value: 23, color: "#F59E0B" },
-  { name: "Rejected", value: 15, color: COLORS.danger },
+
+// Combined list — used for lookups (ModuleStub, sidebar shell check) that
+// don't care which nav group a module belongs to.
+const MODULES = [...ADMIN_MODULES, ...PROJECT_MODULES];
+
+
+/* ============================================================
+   POWER AUTOMATE FLOW CALLS — moved to flows.js (shared with
+   ProjectAllocation.jsx to avoid a circular import between the
+   two files). See flows.js for the entity switch documentation.
+   ============================================================ */
+import {
+  callDepartmentFlow, callCountryFlow, callProjectCategoryFlow,
+  callRoleFlow, callClientFlow, callBillingTypeFlow, callUserFlow,
+  callDealStatusFlow, callClientContactFlow, callProjectFlow,
+} from "./flows";
+
+// Cycling palette for charts that color each bar/slice individually.
+const CHART_PALETTE = [
+  "#3B6FE0", "#8B5CF6", "#0EA5A4", "#F59E0B", "#22A06B",
+  "#E11D48", "#EAB308", "#06B6D4", "#A855F7", "#F43F5E",
 ];
 
 /* ============================================================
@@ -446,17 +244,14 @@ const inputStyle = {
 };
 
 /* ============================================================
-   TOP NAV (with Master Data Transaction mega-dropdown)
+   TOP NAV — Admin and Project Management are direct links now
+   (no dropdown); clicking either jumps straight to its first
+   implemented screen. The left ModuleSidebar (shown once inside
+   either shell) lists the rest of that group's screens.
    ============================================================ */
 function TopNav({ user, current, onNavigateHome, onOpenModule, onLogout }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef(null);
-
-  useEffect(() => {
-    const close = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
-    document.addEventListener("mousedown", close);
-    return () => document.removeEventListener("mousedown", close);
-  }, []);
+  const inAdmin = ADMIN_MODULES.some((m) => m.key === current);
+  const inProject = PROJECT_MODULES.some((m) => m.key === current);
 
   return (
     <div style={{
@@ -467,46 +262,18 @@ function TopNav({ user, current, onNavigateHome, onOpenModule, onLogout }) {
         <div style={{ cursor: "pointer" }} onClick={onNavigateHome}><Logo /></div>
         <nav style={{ display: "flex", alignItems: "center", gap: 4 }}>
           <NavItem label="Dashboard" icon={LayoutDashboard} active={current === "dashboard"} onClick={onNavigateHome} />
-          <div ref={ref} style={{ position: "relative" }}>
-            <NavItem label="Master Data Transaction" icon={ChevronDown} iconRight active={open || MODULES.some(m => m.key === current)} onClick={() => setOpen((o) => !o)} />
-            {open && (
-              <div style={{
-                position: "absolute", top: 48, left: 0, width: 300, background: COLORS.card,
-                borderRadius: 12, boxShadow: "0 20px 45px rgba(10,15,35,0.28)", border: `1px solid ${COLORS.border}`,
-                padding: 8, maxHeight: 420, overflowY: "auto",
-              }}>
-                <div style={{ padding: "8px 10px 4px", fontSize: 11, fontWeight: 700, letterSpacing: 0.5, color: COLORS.textMuted, textTransform: "uppercase" }}>
-                  Admin Modules
-                </div>
-                {MODULES.map((m) => {
-                  const Icon = m.icon;
-                  return (
-                    <div
-                      key={m.key}
-                      onClick={() => { onOpenModule(m.key); setOpen(false); }}
-                      style={{
-                        display: "flex", alignItems: "center", gap: 10, padding: "9px 10px", borderRadius: 8,
-                        cursor: "pointer", fontSize: 13.5, color: COLORS.text, fontWeight: 500,
-                      }}
-                      onMouseEnter={(e) => (e.currentTarget.style.background = COLORS.bg)}
-                      onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-                    >
-                      <span style={{
-                        width: 26, height: 26, borderRadius: 7, display: "flex", alignItems: "center", justifyContent: "center",
-                        background: `${m.color}1F`, color: m.color, flexShrink: 0,
-                      }}>
-                        <Icon size={14} />
-                      </span>
-                      {m.label}
-                      {!m.implemented && (
-                        <span style={{ marginLeft: "auto", fontSize: 10, color: COLORS.textMuted, background: COLORS.bg, padding: "2px 6px", borderRadius: 6 }}>soon</span>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
+          <NavItem
+            label="Admin"
+            icon={Building2}
+            active={inAdmin}
+            onClick={() => onOpenModule(ADMIN_MODULES.find((m) => m.implemented)?.key || ADMIN_MODULES[0].key)}
+          />
+          <NavItem
+            label="Project Management"
+            icon={FolderKanban}
+            active={inProject}
+            onClick={() => onOpenModule(PROJECT_MODULES.find((m) => m.implemented)?.key || PROJECT_MODULES[0].key)}
+          />
         </nav>
       </div>
 
@@ -547,18 +314,23 @@ function NavItem({ label, icon: Icon, iconRight, active, onClick }) {
 }
 
 /* ============================================================
-   MODULE SIDEBAR (shown once inside Master Data Transaction)
+   MODULE SIDEBAR — shows only the modules belonging to whichever
+   group (Admin / Project Management) the current page is in.
    ============================================================ */
 function ModuleSidebar({ current, onSelect }) {
+  const inProject = PROJECT_MODULES.some((m) => m.key === current);
+  const groupModules = inProject ? PROJECT_MODULES : ADMIN_MODULES;
+  const groupLabel = inProject ? "Project Management" : "Admin";
+
   return (
     <div style={{
       width: 236, background: COLORS.navy, flexShrink: 0, padding: "18px 10px",
       display: "flex", flexDirection: "column", gap: 2, overflowY: "auto",
     }}>
       <div style={{ padding: "6px 12px 10px", fontSize: 11, fontWeight: 700, letterSpacing: 0.6, color: "#7783AA", textTransform: "uppercase" }}>
-        Admin Modules
+        {groupLabel}
       </div>
-      {MODULES.map((m) => {
+      {groupModules.map((m) => {
         const Icon = m.icon;
         const active = current === m.key;
         return (
@@ -590,12 +362,56 @@ function ModuleSidebar({ current, onSelect }) {
    DASHBOARD HOME
    ============================================================ */
 function DashboardHome({ onOpenModule }) {
+  const [loading, setLoading] = useState(true);
+  const [departments, setDepartments] = useState([]);
+  const [users, setUsers] = useState([]);
+  const [clients, setClients] = useState([]);
+  const [projects, setProjects] = useState([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    Promise.all([callDepartmentFlow("LIST"), callUserFlow("LIST"), callClientFlow("LIST"), callProjectFlow("LIST")])
+      .then(([dept, usr, cli, proj]) => {
+        if (cancelled) return;
+        setDepartments(dept.data);
+        setUsers(usr.data);
+        setClients(cli.data);
+        setProjects(proj.data);
+        setLoading(false);
+      })
+      .catch(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, []);
+
+  const activeDepartments = departments.filter((d) => d.active).length;
+  const activeProjects = projects.filter((p) => p.active).length;
+  const activeUsers = users.filter((u) => u.active).length;
+  const activeClients = clients.filter((c) => c.active).length;
+
   const kpis = [
-    { label: "Active Departments", value: "9", icon: Building2, color: "#3B6FE0" },
-    { label: "Open Projects", value: "128", icon: FolderKanban, color: "#22A06B" },
-    { label: "Active Users", value: "342", icon: Users2, color: "#8B5CF6" },
-    { label: "Pending Approvals", value: "23", icon: ClipboardList, color: "#F59E0B" },
+    { label: "Active Departments", value: String(activeDepartments), icon: Building2, color: "#3B6FE0" },
+    { label: "Open Projects", value: String(activeProjects), icon: FolderKanban, color: "#22A06B" },
+    { label: "Active Users", value: String(activeUsers), icon: Users2, color: "#8B5CF6" },
+    { label: "Active Clients", value: String(activeClients), icon: Briefcase, color: "#EAB308" },
   ];
+
+  // Headcount by Department — derived from real Users grouped by DepartmentID.
+  const deptHeadcount = departments.map((d) => ({
+    name: d.name,
+    value: users.filter((u) => String(u.departmentId) === String(d.guid)).length,
+  })).filter((d) => d.value > 0);
+
+  // Users by Gender — derived from real Users.
+  const genderCounts = {};
+  users.forEach((u) => {
+    const g = u.gender || "Unspecified";
+    genderCounts[g] = (genderCounts[g] || 0) + 1;
+  });
+  const genderSplit = Object.entries(genderCounts).map(([name, value], i) => ({
+    name, value, color: CHART_PALETTE[i % CHART_PALETTE.length],
+  }));
+
   return (
     <div style={{ padding: 26, overflowY: "auto", flex: 1 }}>
       <div style={{ fontFamily: "Sora, sans-serif", fontSize: 21, fontWeight: 700, color: COLORS.text }}>Welcome back 👋</div>
@@ -612,54 +428,53 @@ function DashboardHome({ onOpenModule }) {
                   <Icon size={15} />
                 </span>
               </div>
-              <div style={{ fontFamily: "Sora, sans-serif", fontSize: 26, fontWeight: 700, color: COLORS.text, marginTop: 10 }}>{k.value}</div>
+              <div style={{ fontFamily: "Sora, sans-serif", fontSize: 26, fontWeight: 700, color: COLORS.text, marginTop: 10 }}>
+                {loading ? <Loader2 size={20} className="spin" /> : k.value}
+              </div>
             </div>
           );
         })}
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 14, marginBottom: 14 }}>
-        <div style={cardStyle}>
-          <div style={cardTitle}><TrendingUp size={14} /> Transactions — last 6 months</div>
-          <ResponsiveContainer width="100%" height={220}>
-            <LineChart data={monthlyTransactions}>
-              <CartesianGrid stroke={COLORS.border} vertical={false} />
-              <XAxis dataKey="month" tick={{ fontSize: 12, fill: COLORS.textMuted }} axisLine={false} tickLine={false} />
-              <YAxis tick={{ fontSize: 12, fill: COLORS.textMuted }} axisLine={false} tickLine={false} />
-              <Tooltip />
-              <Line type="monotone" dataKey="value" stroke={COLORS.accent} strokeWidth={2.5} dot={{ r: 3 }} />
-            </LineChart>
-          </ResponsiveContainer>
+      {!loading && (
+        <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 14, marginBottom: 14 }}>
+          <div style={cardStyle}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+              <div style={cardTitle}><Building2 size={14} /> Headcount by Department</div>
+              <button onClick={() => onOpenModule("department")} style={linkBtn}>Manage departments →</button>
+            </div>
+            {deptHeadcount.length === 0 ? (
+              <div style={{ padding: 30, textAlign: "center", color: COLORS.textMuted, fontSize: 13 }}>No users assigned to departments yet.</div>
+            ) : (
+              <ResponsiveContainer width="100%" height={220}>
+                <BarChart data={deptHeadcount}>
+                  <CartesianGrid stroke={COLORS.border} vertical={false} />
+                  <XAxis dataKey="name" tick={{ fontSize: 12, fill: COLORS.textMuted }} axisLine={false} tickLine={false} />
+                  <YAxis allowDecimals={false} tick={{ fontSize: 12, fill: COLORS.textMuted }} axisLine={false} tickLine={false} />
+                  <Tooltip />
+                  <Bar dataKey="value" fill={COLORS.accent} radius={[6, 6, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+          <div style={cardStyle}>
+            <div style={cardTitle}><Users2 size={14} /> Users by Gender</div>
+            {genderSplit.length === 0 ? (
+              <div style={{ padding: 30, textAlign: "center", color: COLORS.textMuted, fontSize: 13 }}>No users yet.</div>
+            ) : (
+              <ResponsiveContainer width="100%" height={220}>
+                <PieChart>
+                  <Pie data={genderSplit} dataKey="value" nameKey="name" innerRadius={50} outerRadius={78} paddingAngle={3}>
+                    {genderSplit.map((s) => <Cell key={s.name} fill={s.color} />)}
+                  </Pie>
+                  <Legend iconType="circle" wrapperStyle={{ fontSize: 12 }} />
+                  <Tooltip />
+                </PieChart>
+              </ResponsiveContainer>
+            )}
+          </div>
         </div>
-        <div style={cardStyle}>
-          <div style={cardTitle}><ClipboardList size={14} /> Approval Status Split</div>
-          <ResponsiveContainer width="100%" height={220}>
-            <PieChart>
-              <Pie data={approvalSplit} dataKey="value" nameKey="name" innerRadius={50} outerRadius={78} paddingAngle={3}>
-                {approvalSplit.map((s) => <Cell key={s.name} fill={s.color} />)}
-              </Pie>
-              <Legend iconType="circle" wrapperStyle={{ fontSize: 12 }} />
-              <Tooltip />
-            </PieChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
-
-      <div style={cardStyle}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
-          <div style={cardTitle}><Building2 size={14} /> Headcount by Department</div>
-          <button onClick={() => onOpenModule("department")} style={linkBtn}>Manage departments →</button>
-        </div>
-        <ResponsiveContainer width="100%" height={220}>
-          <BarChart data={deptHeadcount}>
-            <CartesianGrid stroke={COLORS.border} vertical={false} />
-            <XAxis dataKey="name" tick={{ fontSize: 12, fill: COLORS.textMuted }} axisLine={false} tickLine={false} />
-            <YAxis tick={{ fontSize: 12, fill: COLORS.textMuted }} axisLine={false} tickLine={false} />
-            <Tooltip />
-            <Bar dataKey="value" fill={COLORS.accent} radius={[6, 6, 0, 0]} />
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
+      )}
     </div>
   );
 }
@@ -723,10 +538,16 @@ function DepartmentsPage() {
   const [confirmDelete, setConfirmDelete] = useState(null); // null | department row
   const [deleting, setDeleting] = useState(false);
 
+  const [listError, setListError] = useState("");
+
   const refresh = useCallback(() => {
     setLoading(true);
+    setListError("");
     callDepartmentFlow("LIST").then((res) => {
       setRows(res.data);
+      setLoading(false);
+    }).catch((e) => {
+      setListError(e.message);
       setLoading(false);
     });
   }, []);
@@ -830,6 +651,17 @@ function DepartmentsPage() {
               {loading ? (
                 <tr><td colSpan={4} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>
                   <Loader2 size={18} className="spin" style={{ verticalAlign: "middle", marginRight: 8 }} /> Loading departments…
+                </td></tr>
+              ) : listError ? (
+                <tr><td colSpan={4} style={{ padding: 40, textAlign: "center" }}>
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, color: COLORS.danger, fontSize: 13 }}>
+                      <AlertCircle size={16} /> Couldn't load departments: {listError}
+                    </div>
+                    <button onClick={refresh} style={{ display: "flex", alignItems: "center", gap: 6, border: `1px solid ${COLORS.border}`, background: "#fff", borderRadius: 8, padding: "6px 14px", fontSize: 12.5, cursor: "pointer", color: COLORS.text }}>
+                      <RefreshCw size={13} /> Retry
+                    </button>
+                  </div>
                 </td></tr>
               ) : filtered.length === 0 ? (
                 <tr><td colSpan={4} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>No departments match your search.</td></tr>
@@ -992,10 +824,16 @@ function CountryPage() {
   const [confirmDelete, setConfirmDelete] = useState(null); // null | country row
   const [deleting, setDeleting] = useState(false);
 
+  const [listError, setListError] = useState("");
+
   const refresh = useCallback(() => {
     setLoading(true);
+    setListError("");
     callCountryFlow("LIST").then((res) => {
       setRows(res.data);
+      setLoading(false);
+    }).catch((e) => {
+      setListError(e.message);
       setLoading(false);
     });
   }, []);
@@ -1175,6 +1013,17 @@ function CountryPage() {
                 <tr><td colSpan={4} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>
                   <Loader2 size={18} className="spin" style={{ verticalAlign: "middle", marginRight: 8 }} /> Loading countries…
                 </td></tr>
+              ) : listError ? (
+                <tr><td colSpan={4} style={{ padding: 40, textAlign: "center" }}>
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, color: COLORS.danger, fontSize: 13 }}>
+                      <AlertCircle size={16} /> Couldn't load countries: {listError}
+                    </div>
+                    <button onClick={refresh} style={{ display: "flex", alignItems: "center", gap: 6, border: `1px solid ${COLORS.border}`, background: "#fff", borderRadius: 8, padding: "6px 14px", fontSize: 12.5, cursor: "pointer", color: COLORS.text }}>
+                      <RefreshCw size={13} /> Retry
+                    </button>
+                  </div>
+                </td></tr>
               ) : filtered.length === 0 ? (
                 <tr><td colSpan={4} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>No countries match your search.</td></tr>
               ) : filtered.map((c, i) => (
@@ -1239,13 +1088,6 @@ function CountryPage() {
     </div>
   );
 }
-
-// Distinct, cycling palette for charts that color each bar/slice
-// individually (e.g. the Country-by-starting-letter distribution).
-const CHART_PALETTE = [
-  "#3B6FE0", "#8B5CF6", "#0EA5A4", "#F59E0B", "#22A06B",
-  "#E11D48", "#EAB308", "#06B6D4", "#A855F7", "#F43F5E",
-];
 
 function CountryPanel({ mode, data, saving, error, onCancel, onSubmit }) {
   const [form, setForm] = useState(data);
@@ -1339,10 +1181,16 @@ function ProjectCategoryPage() {
   const [confirmDelete, setConfirmDelete] = useState(null); // null | category row
   const [deleting, setDeleting] = useState(false);
 
+  const [listError, setListError] = useState("");
+
   const refresh = useCallback(() => {
     setLoading(true);
+    setListError("");
     callProjectCategoryFlow("LIST").then((res) => {
       setRows(res.data);
+      setLoading(false);
+    }).catch((e) => {
+      setListError(e.message);
       setLoading(false);
     });
   }, []);
@@ -1470,6 +1318,17 @@ function ProjectCategoryPage() {
               {loading ? (
                 <tr><td colSpan={4} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>
                   <Loader2 size={18} className="spin" style={{ verticalAlign: "middle", marginRight: 8 }} /> Loading categories…
+                </td></tr>
+              ) : listError ? (
+                <tr><td colSpan={4} style={{ padding: 40, textAlign: "center" }}>
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, color: COLORS.danger, fontSize: 13 }}>
+                      <AlertCircle size={16} /> Couldn't load categories: {listError}
+                    </div>
+                    <button onClick={refresh} style={{ display: "flex", alignItems: "center", gap: 6, border: `1px solid ${COLORS.border}`, background: "#fff", borderRadius: 8, padding: "6px 14px", fontSize: 12.5, cursor: "pointer", color: COLORS.text }}>
+                      <RefreshCw size={13} /> Retry
+                    </button>
+                  </div>
                 </td></tr>
               ) : filtered.length === 0 ? (
                 <tr><td colSpan={4} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>No categories match your search.</td></tr>
@@ -1628,10 +1487,16 @@ function RolesPage() {
   const [confirmDelete, setConfirmDelete] = useState(null); // null | role row
   const [deleting, setDeleting] = useState(false);
 
+  const [listError, setListError] = useState("");
+
   const refresh = useCallback(() => {
     setLoading(true);
+    setListError("");
     callRoleFlow("LIST").then((res) => {
       setRows(res.data);
+      setLoading(false);
+    }).catch((e) => {
+      setListError(e.message);
       setLoading(false);
     });
   }, []);
@@ -1759,6 +1624,17 @@ function RolesPage() {
               {loading ? (
                 <tr><td colSpan={4} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>
                   <Loader2 size={18} className="spin" style={{ verticalAlign: "middle", marginRight: 8 }} /> Loading roles…
+                </td></tr>
+              ) : listError ? (
+                <tr><td colSpan={4} style={{ padding: 40, textAlign: "center" }}>
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, color: COLORS.danger, fontSize: 13 }}>
+                      <AlertCircle size={16} /> Couldn't load roles: {listError}
+                    </div>
+                    <button onClick={refresh} style={{ display: "flex", alignItems: "center", gap: 6, border: `1px solid ${COLORS.border}`, background: "#fff", borderRadius: 8, padding: "6px 14px", fontSize: 12.5, cursor: "pointer", color: COLORS.text }}>
+                      <RefreshCw size={13} /> Retry
+                    </button>
+                  </div>
                 </td></tr>
               ) : filtered.length === 0 ? (
                 <tr><td colSpan={4} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>No roles match your search.</td></tr>
@@ -1902,6 +1778,981 @@ function RolePanel({ mode, data, saving, error, onCancel, onSubmit }) {
   );
 }
 
+function BillingTypePage() {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [panel, setPanel] = useState(null); // null | { mode: 'add'|'edit', data }
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+  const [toast, setToast] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState(null); // null | role row
+  const [deleting, setDeleting] = useState(false);
+
+  const [listError, setListError] = useState("");
+
+  const refresh = useCallback(() => {
+    setLoading(true);
+    setListError("");
+    callBillingTypeFlow("LIST").then((res) => {
+      setRows(res.data);
+      setLoading(false);
+    }).catch((e) => {
+      setListError(e.message);
+      setLoading(false);
+    });
+  }, []);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(""), 2600);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  const filtered = rows.filter((r) =>
+    (r.code || "").toLowerCase().includes(search.toLowerCase()) || (r.name || "").toLowerCase().includes(search.toLowerCase())
+  );
+  const activeCount = rows.filter((r) => r.active).length;
+
+  const kpis = [
+    { label: "Billing Types", value: String(rows.length), icon: CalendarClock, color: "#8B5CF6" },
+    { label: "Active Billing Types", value: String(activeCount), icon: CheckCircle2, color: COLORS.success },
+    { label: "Inactive Billing Types", value: String(rows.length - activeCount), icon: AlertCircle, color: COLORS.danger },
+  ];
+
+  const submitPanel = (form) => {
+    if (!form.code?.trim() || !form.name?.trim()) {
+      setErr("Billing Type Code and Name are required.");
+      return;
+    }
+    setSaving(true);
+    setErr("");
+    const action = form.guid ? "EDIT" : "CREATE";
+    callBillingTypeFlow(action, form)
+      .then((res) => {
+        setRows(res.data); // flow returns the refreshed list — reflect it immediately
+        setSaving(false);
+        setPanel(null);
+        setToast(form.guid ? "Billing type updated." : "Billing type added.");
+      })
+      .catch((e) => {
+        setSaving(false);
+        setErr(e.message);
+      });
+  };
+
+  const confirmDeleteRow = () => {
+    if (!confirmDelete) return;
+    setDeleting(true);
+    callBillingTypeFlow("DELETE", confirmDelete)
+      .then((res) => {
+        setRows(res.data);
+        setDeleting(false);
+        setConfirmDelete(null);
+        setToast("Billing type deleted.");
+      })
+      .catch((e) => {
+        setDeleting(false);
+        setToast(`Delete failed: ${e.message}`);
+      });
+  };
+
+  return (
+    <div style={{ flex: 1, display: "flex", overflow: "hidden", position: "relative" }}>
+      <div style={{ flex: 1, padding: 26, overflowY: "auto" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 18 }}>
+          <div>
+            <div style={{ fontFamily: "Sora, sans-serif", fontSize: 20, fontWeight: 700, color: COLORS.text }}>Billing Type Master</div>
+            <div style={{ color: COLORS.textMuted, fontSize: 13.5 }}>Add, edit and manage Billing Types</div>
+          </div>
+          <button
+            onClick={() => setPanel({ mode: "add", data: { guid: "", code: "", name: "", active: true } })}
+            style={{
+              display: "flex", alignItems: "center", gap: 7, background: COLORS.accent, color: "#fff", border: "none",
+              borderRadius: 9, padding: "10px 16px", fontSize: 13.5, fontWeight: 700, cursor: "pointer",
+            }}
+          >
+            <Plus size={15} /> Add Billing Type
+          </button>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 14, marginBottom: 16 }}>
+          {kpis.map((k) => {
+            const Icon = k.icon;
+            return (
+              <div key={k.label} style={cardStyle}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <span style={{ color: COLORS.textMuted, fontSize: 12.5, fontWeight: 600 }}>{k.label}</span>
+                  <span style={{ width: 30, height: 30, borderRadius: 8, background: `${k.color}1F`, color: k.color, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <Icon size={15} />
+                  </span>
+                </div>
+                <div style={{ fontFamily: "Sora, sans-serif", fontSize: 26, fontWeight: 700, color: COLORS.text, marginTop: 10 }}>{k.value}</div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={{ ...cardStyle, padding: 0, overflow: "hidden" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 16px", borderBottom: `1px solid ${COLORS.border}` }}>
+            <div style={{ fontWeight: 700, fontSize: 14, color: COLORS.text }}>Billing Types <span style={{ color: COLORS.textMuted, fontWeight: 500 }}>({filtered.length})</span></div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "7px 11px", width: 260 }}>
+                <Search size={14} color={COLORS.textMuted} />
+                <input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search by code or name"
+                  style={{ border: "none", outline: "none", fontSize: 13, width: "100%", fontFamily: "Inter, sans-serif" }}
+                />
+              </div>
+              <button onClick={refresh} style={{ display: "flex", alignItems: "center", gap: 6, border: `1px solid ${COLORS.border}`, background: "#fff", borderRadius: 8, padding: "0 12px", fontSize: 12.5, cursor: "pointer", color: COLORS.text }}>
+                <RefreshCw size={13} className={loading ? "spin" : ""} /> Refresh
+              </button>
+            </div>
+          </div>
+
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ background: COLORS.bg }}>
+                {["Billing Type Code", "Billing Type Name", "Status", ""].map((h) => (
+                  <th key={h} style={{ textAlign: "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr><td colSpan={4} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>
+                  <Loader2 size={18} className="spin" style={{ verticalAlign: "middle", marginRight: 8 }} /> Loading billing types…
+                </td></tr>
+              ) : listError ? (
+                <tr><td colSpan={4} style={{ padding: 40, textAlign: "center" }}>
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, color: COLORS.danger, fontSize: 13 }}>
+                      <AlertCircle size={16} /> Couldn't load billing types: {listError}
+                    </div>
+                    <button onClick={refresh} style={{ display: "flex", alignItems: "center", gap: 6, border: `1px solid ${COLORS.border}`, background: "#fff", borderRadius: 8, padding: "6px 14px", fontSize: 12.5, cursor: "pointer", color: COLORS.text }}>
+                      <RefreshCw size={13} /> Retry
+                    </button>
+                  </div>
+                </td></tr>
+              ) : filtered.length === 0 ? (
+                <tr><td colSpan={4} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>No billing types match your search.</td></tr>
+              ) : filtered.map((r, i) => (
+                <tr key={r.id} style={{ borderTop: `1px solid ${COLORS.border}`, background: i % 2 ? "#FAFBFD" : "#fff" }}>
+                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text, fontWeight: 600 }}>{r.code}</td>
+                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text }}>{r.name}</td>
+                  <td style={{ padding: "11px 16px" }}><StatusBadge active={r.active} /></td>
+                  <td style={{ padding: "11px 16px", textAlign: "right" }}>
+                    <div style={{ display: "inline-flex", gap: 8 }}>
+                      <button
+                        onClick={() => setPanel({ mode: "edit", data: { ...r } })}
+                        style={{ display: "inline-flex", alignItems: "center", gap: 6, background: COLORS.accentSoft, color: COLORS.accent, border: "none", borderRadius: 7, padding: "6px 11px", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}
+                      >
+                        <Pencil size={12} /> Edit
+                      </button>
+                      <button
+                        onClick={() => setConfirmDelete(r)}
+                        style={{ display: "inline-flex", alignItems: "center", gap: 6, background: COLORS.dangerSoft, color: COLORS.danger, border: "none", borderRadius: 7, padding: "6px 11px", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}
+                      >
+                        <Trash2 size={12} /> Delete
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {panel && (
+        <BillingTypePanel
+          mode={panel.mode}
+          data={panel.data}
+          saving={saving}
+          error={err}
+          onCancel={() => { setPanel(null); setErr(""); }}
+          onSubmit={submitPanel}
+        />
+      )}
+
+      {confirmDelete && (
+        <ConfirmModal
+          title="Delete this billing type?"
+          message={`"${confirmDelete.name}" (${confirmDelete.code}) will be permanently removed. This can't be undone.`}
+          confirmLabel="Delete"
+          busy={deleting}
+          onCancel={() => setConfirmDelete(null)}
+          onConfirm={confirmDeleteRow}
+        />
+      )}
+
+      {toast && (
+        <div style={{
+          position: "absolute", bottom: 22, left: "50%", transform: "translateX(-50%)",
+          background: COLORS.text, color: "#fff", padding: "10px 18px", borderRadius: 9, fontSize: 13, fontWeight: 600,
+          display: "flex", alignItems: "center", gap: 8, boxShadow: "0 12px 30px rgba(0,0,0,0.2)",
+        }}>
+          <CheckCircle2 size={15} color={COLORS.success} /> {toast}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BillingTypePanel({ mode, data, saving, error, onCancel, onSubmit }) {
+  const [form, setForm] = useState(data);
+  useEffect(() => setForm(data), [data]);
+
+  return (
+    <div style={{
+      width: 340, background: COLORS.card, borderLeft: `1px solid ${COLORS.border}`, flexShrink: 0,
+      display: "flex", flexDirection: "column", boxShadow: "-8px 0 30px rgba(15,20,40,0.06)",
+    }}>
+      <div style={{ padding: "18px 20px", borderBottom: `1px solid ${COLORS.border}`, display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 15, color: COLORS.text }}>{mode === "add" ? "Add New Billing Type" : "Edit Billing Type"}</div>
+          <div style={{ fontSize: 12, color: COLORS.accent, marginTop: 2 }}>Fill all required fields below</div>
+        </div>
+        <button onClick={onCancel} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.textMuted }}><X size={18} /></button>
+      </div>
+
+      <div style={{ padding: 20, flex: 1, overflowY: "auto" }}>
+        <label style={labelStyle}>Billing Type Code*</label>
+        <input
+          value={form.code}
+          onChange={(e) => setForm({ ...form, code: e.target.value })}
+          placeholder="e.g. TM"
+          style={inputStyle}
+        />
+        <label style={{ ...labelStyle, marginTop: 16 }}>Billing Type Name*</label>
+        <input
+          value={form.name}
+          onChange={(e) => setForm({ ...form, name: e.target.value })}
+          placeholder="e.g. Time & Material"
+          style={inputStyle}
+        />
+
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 20, padding: "12px 14px", border: `1px solid ${COLORS.border}`, borderRadius: 10 }}>
+          <span style={{ fontSize: 13.5, fontWeight: 600, color: COLORS.text }}>Active</span>
+          <div
+            onClick={() => setForm({ ...form, active: !form.active })}
+            style={{
+              width: 40, height: 22, borderRadius: 999, background: form.active ? COLORS.accent : "#D7DCE6",
+              position: "relative", cursor: "pointer", transition: "background 0.15s",
+            }}
+          >
+            <div style={{
+              width: 18, height: 18, borderRadius: "50%", background: "#fff", position: "absolute", top: 2,
+              left: form.active ? 20 : 2, transition: "left 0.15s", boxShadow: "0 1px 3px rgba(0,0,0,0.25)",
+            }} />
+          </div>
+        </div>
+
+        {error && (
+          <div style={{ display: "flex", gap: 8, alignItems: "center", color: COLORS.danger, fontSize: 12.5, marginTop: 16 }}>
+            <AlertCircle size={14} /> {error}
+          </div>
+        )}
+      </div>
+
+      <div style={{ padding: 16, borderTop: `1px solid ${COLORS.border}`, display: "flex", gap: 10, justifyContent: "flex-end" }}>
+        <button onClick={onCancel} style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", color: COLORS.text }}>
+          Cancel
+        </button>
+        <button
+          onClick={() => onSubmit(form)}
+          disabled={saving}
+          style={{
+            padding: "9px 18px", borderRadius: 8, border: "none", background: COLORS.accent, color: "#fff",
+            fontSize: 13, fontWeight: 700, cursor: saving ? "default" : "pointer", opacity: saving ? 0.75 : 1,
+            display: "flex", alignItems: "center", gap: 7,
+          }}
+        >
+          {saving && <Loader2 size={13} className="spin" />}
+          {saving ? "Saving…" : "Submit"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   PROJECT DEAL STATUS SCREEN (full CRUD, entity="DealStatus")
+   No code field — per PowerApps pattern, uniqueness is enforced
+   by checking for a duplicate name client-side instead.
+   ============================================================ */
+function DealStatusPage() {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [panel, setPanel] = useState(null); // null | { mode: 'add'|'edit', data }
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+  const [toast, setToast] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+
+  const [listError, setListError] = useState("");
+
+  const refresh = useCallback(() => {
+    setLoading(true);
+    setListError("");
+    callDealStatusFlow("LIST").then((res) => {
+      setRows(res.data);
+      setLoading(false);
+    }).catch((e) => {
+      setListError(e.message);
+      setLoading(false);
+    });
+  }, []);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(""), 2600);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  const filtered = rows.filter((r) => (r.name || "").toLowerCase().includes(search.toLowerCase()));
+  const activeCount = rows.filter((r) => r.active).length;
+
+  const kpis = [
+    { label: "Deal Statuses", value: String(rows.length), icon: Handshake, color: "#22A06B" },
+    { label: "Active", value: String(activeCount), icon: CheckCircle2, color: COLORS.success },
+    { label: "Inactive", value: String(rows.length - activeCount), icon: AlertCircle, color: COLORS.danger },
+  ];
+
+  const submitPanel = (form) => {
+    if (!form.name?.trim()) {
+      setErr("Deal Status Name is required.");
+      return;
+    }
+    const dup = rows.some((r) => r.name.trim().toLowerCase() === form.name.trim().toLowerCase() && String(r.guid) !== String(form.guid));
+    if (dup) {
+      setErr("A deal status with this name already exists.");
+      return;
+    }
+    setSaving(true);
+    setErr("");
+    const action = form.guid ? "EDIT" : "CREATE";
+    callDealStatusFlow(action, form)
+      .then((res) => {
+        setRows(res.data);
+        setSaving(false);
+        setPanel(null);
+        setToast(form.guid ? "Deal status updated." : "Deal status added.");
+      })
+      .catch((e) => {
+        setSaving(false);
+        setErr(e.message);
+      });
+  };
+
+  const confirmDeleteRow = () => {
+    if (!confirmDelete) return;
+    setDeleting(true);
+    callDealStatusFlow("DELETE", confirmDelete)
+      .then((res) => {
+        setRows(res.data);
+        setDeleting(false);
+        setConfirmDelete(null);
+        setToast("Deal status deleted.");
+      })
+      .catch((e) => {
+        setDeleting(false);
+        setToast(`Delete failed: ${e.message}`);
+      });
+  };
+
+  return (
+    <div style={{ flex: 1, display: "flex", overflow: "hidden", position: "relative" }}>
+      <div style={{ flex: 1, padding: 26, overflowY: "auto" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 18 }}>
+          <div>
+            <div style={{ fontFamily: "Sora, sans-serif", fontSize: 20, fontWeight: 700, color: COLORS.text }}>Project Deal Status Master</div>
+            <div style={{ color: COLORS.textMuted, fontSize: 13.5 }}>Add, edit and manage deal statuses</div>
+          </div>
+          <button
+            onClick={() => setPanel({ mode: "add", data: { guid: "", name: "", active: true } })}
+            style={{
+              display: "flex", alignItems: "center", gap: 7, background: COLORS.accent, color: "#fff", border: "none",
+              borderRadius: 9, padding: "10px 16px", fontSize: 13.5, fontWeight: 700, cursor: "pointer",
+            }}
+          >
+            <Plus size={15} /> Add Deal Status
+          </button>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 14, marginBottom: 16 }}>
+          {kpis.map((k) => {
+            const Icon = k.icon;
+            return (
+              <div key={k.label} style={cardStyle}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <span style={{ color: COLORS.textMuted, fontSize: 12.5, fontWeight: 600 }}>{k.label}</span>
+                  <span style={{ width: 30, height: 30, borderRadius: 8, background: `${k.color}1F`, color: k.color, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <Icon size={15} />
+                  </span>
+                </div>
+                <div style={{ fontFamily: "Sora, sans-serif", fontSize: 26, fontWeight: 700, color: COLORS.text, marginTop: 10 }}>{k.value}</div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={{ ...cardStyle, padding: 0, overflow: "hidden" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 16px", borderBottom: `1px solid ${COLORS.border}` }}>
+            <div style={{ fontWeight: 700, fontSize: 14, color: COLORS.text }}>Deal Statuses <span style={{ color: COLORS.textMuted, fontWeight: 500 }}>({filtered.length})</span></div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "7px 11px", width: 260 }}>
+                <Search size={14} color={COLORS.textMuted} />
+                <input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search by name"
+                  style={{ border: "none", outline: "none", fontSize: 13, width: "100%", fontFamily: "Inter, sans-serif" }}
+                />
+              </div>
+              <button onClick={refresh} style={{ display: "flex", alignItems: "center", gap: 6, border: `1px solid ${COLORS.border}`, background: "#fff", borderRadius: 8, padding: "0 12px", fontSize: 12.5, cursor: "pointer", color: COLORS.text }}>
+                <RefreshCw size={13} className={loading ? "spin" : ""} /> Refresh
+              </button>
+            </div>
+          </div>
+
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ background: COLORS.bg }}>
+                {["Deal Status Name", "Status", ""].map((h) => (
+                  <th key={h} style={{ textAlign: "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr><td colSpan={3} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>
+                  <Loader2 size={18} className="spin" style={{ verticalAlign: "middle", marginRight: 8 }} /> Loading deal statuses…
+                </td></tr>
+              ) : listError ? (
+                <tr><td colSpan={3} style={{ padding: 40, textAlign: "center" }}>
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, color: COLORS.danger, fontSize: 13 }}>
+                      <AlertCircle size={16} /> Couldn't load deal statuses: {listError}
+                    </div>
+                    <button onClick={refresh} style={{ display: "flex", alignItems: "center", gap: 6, border: `1px solid ${COLORS.border}`, background: "#fff", borderRadius: 8, padding: "6px 14px", fontSize: 12.5, cursor: "pointer", color: COLORS.text }}>
+                      <RefreshCw size={13} /> Retry
+                    </button>
+                  </div>
+                </td></tr>
+              ) : filtered.length === 0 ? (
+                <tr><td colSpan={3} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>No deal statuses match your search.</td></tr>
+              ) : filtered.map((d, i) => (
+                <tr key={d.id} style={{ borderTop: `1px solid ${COLORS.border}`, background: i % 2 ? "#FAFBFD" : "#fff" }}>
+                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text, fontWeight: 600 }}>{d.name}</td>
+                  <td style={{ padding: "11px 16px" }}><StatusBadge active={d.active} /></td>
+                  <td style={{ padding: "11px 16px", textAlign: "right" }}>
+                    <div style={{ display: "inline-flex", gap: 8 }}>
+                      <button
+                        onClick={() => setPanel({ mode: "edit", data: { ...d } })}
+                        style={{ display: "inline-flex", alignItems: "center", gap: 6, background: COLORS.accentSoft, color: COLORS.accent, border: "none", borderRadius: 7, padding: "6px 11px", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}
+                      >
+                        <Pencil size={12} /> Edit
+                      </button>
+                      <button
+                        onClick={() => setConfirmDelete(d)}
+                        style={{ display: "inline-flex", alignItems: "center", gap: 6, background: COLORS.dangerSoft, color: COLORS.danger, border: "none", borderRadius: 7, padding: "6px 11px", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}
+                      >
+                        <Trash2 size={12} /> Delete
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {panel && (
+        <DealStatusPanel
+          mode={panel.mode}
+          data={panel.data}
+          saving={saving}
+          error={err}
+          onCancel={() => { setPanel(null); setErr(""); }}
+          onSubmit={submitPanel}
+        />
+      )}
+
+      {confirmDelete && (
+        <ConfirmModal
+          title="Delete this deal status?"
+          message={`"${confirmDelete.name}" will be permanently removed. This can't be undone.`}
+          confirmLabel="Delete"
+          busy={deleting}
+          onCancel={() => setConfirmDelete(null)}
+          onConfirm={confirmDeleteRow}
+        />
+      )}
+
+      {toast && (
+        <div style={{
+          position: "absolute", bottom: 22, left: "50%", transform: "translateX(-50%)",
+          background: COLORS.text, color: "#fff", padding: "10px 18px", borderRadius: 9, fontSize: 13, fontWeight: 600,
+          display: "flex", alignItems: "center", gap: 8, boxShadow: "0 12px 30px rgba(0,0,0,0.2)",
+        }}>
+          <CheckCircle2 size={15} color={COLORS.success} /> {toast}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DealStatusPanel({ mode, data, saving, error, onCancel, onSubmit }) {
+  const [form, setForm] = useState(data);
+  useEffect(() => setForm(data), [data]);
+
+  return (
+    <div style={{
+      width: 340, background: COLORS.card, borderLeft: `1px solid ${COLORS.border}`, flexShrink: 0,
+      display: "flex", flexDirection: "column", boxShadow: "-8px 0 30px rgba(15,20,40,0.06)",
+    }}>
+      <div style={{ padding: "18px 20px", borderBottom: `1px solid ${COLORS.border}`, display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 15, color: COLORS.text }}>{mode === "add" ? "Add New Deal Status" : "Edit Deal Status"}</div>
+          <div style={{ fontSize: 12, color: COLORS.accent, marginTop: 2 }}>Name must be unique</div>
+        </div>
+        <button onClick={onCancel} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.textMuted }}><X size={18} /></button>
+      </div>
+
+      <div style={{ padding: 20, flex: 1, overflowY: "auto" }}>
+        <label style={labelStyle}>Deal Status Name*</label>
+        <input
+          value={form.name}
+          onChange={(e) => setForm({ ...form, name: e.target.value })}
+          placeholder="e.g. Negotiation"
+          style={inputStyle}
+        />
+
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 20, padding: "12px 14px", border: `1px solid ${COLORS.border}`, borderRadius: 10 }}>
+          <span style={{ fontSize: 13.5, fontWeight: 600, color: COLORS.text }}>Active</span>
+          <div
+            onClick={() => setForm({ ...form, active: !form.active })}
+            style={{
+              width: 40, height: 22, borderRadius: 999, background: form.active ? COLORS.accent : "#D7DCE6",
+              position: "relative", cursor: "pointer", transition: "background 0.15s",
+            }}
+          >
+            <div style={{
+              width: 18, height: 18, borderRadius: "50%", background: "#fff", position: "absolute", top: 2,
+              left: form.active ? 20 : 2, transition: "left 0.15s", boxShadow: "0 1px 3px rgba(0,0,0,0.25)",
+            }} />
+          </div>
+        </div>
+
+        {error && (
+          <div style={{ display: "flex", gap: 8, alignItems: "center", color: COLORS.danger, fontSize: 12.5, marginTop: 16 }}>
+            <AlertCircle size={14} /> {error}
+          </div>
+        )}
+      </div>
+
+      <div style={{ padding: 16, borderTop: `1px solid ${COLORS.border}`, display: "flex", gap: 10, justifyContent: "flex-end" }}>
+        <button onClick={onCancel} style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", color: COLORS.text }}>
+          Cancel
+        </button>
+        <button
+          onClick={() => onSubmit(form)}
+          disabled={saving}
+          style={{
+            padding: "9px 18px", borderRadius: 8, border: "none", background: COLORS.accent, color: "#fff",
+            fontSize: 13, fontWeight: 700, cursor: saving ? "default" : "pointer", opacity: saving ? 0.75 : 1,
+            display: "flex", alignItems: "center", gap: 7,
+          }}
+        >
+          {saving && <Loader2 size={13} className="spin" />}
+          {saving ? "Saving…" : "Submit"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   CLIENT SCREEN — combined Client + Client Contact, one grid
+   row and one panel per client, backed by 2 SQL tables. Save
+   does sequential Patch calls: Client first, then Contact using
+   the resulting ClientId. Mirrors the PowerApps ScrClientMaster_1
+   pattern.
+   ============================================================ */
+function ClientPage() {
+  const [rows, setRows] = useState([]); // each row = { ...client, contact: {...} | null }
+  const [countries, setCountries] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [panel, setPanel] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+  const [toast, setToast] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+
+  const [listError, setListError] = useState("");
+
+  const refresh = useCallback(() => {
+    setLoading(true);
+    setListError("");
+    Promise.all([callClientFlow("LIST"), callClientContactFlow("LIST")])
+      .then(([clientsRes, contactsRes]) => {
+        const merged = clientsRes.data.map((c) => ({
+          ...c,
+          contact: contactsRes.data.find((ct) => String(ct.clientId) === String(c.guid)) || null,
+        }));
+        setRows(merged);
+        setLoading(false);
+      })
+      .catch((e) => {
+        setListError(e.message);
+        setLoading(false);
+      });
+  }, []);
+
+  useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => { callCountryFlow("LIST").then((res) => setCountries(res.data)); }, []);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(""), 2600);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  const countryName = (id) => countries.find((c) => String(c.id) === String(id))?.name || "—";
+
+  const filtered = rows.filter((r) => {
+    const q = search.toLowerCase();
+    return (r.code || "").toLowerCase().includes(q) || (r.name || "").toLowerCase().includes(q) || (r.contact?.contactName || "").toLowerCase().includes(q);
+  });
+  const activeCount = rows.filter((r) => r.active).length;
+
+  const kpis = [
+    { label: "Clients", value: String(rows.length), icon: Briefcase, color: "#EAB308" },
+    { label: "Active Clients", value: String(activeCount), icon: CheckCircle2, color: COLORS.success },
+    { label: "Inactive Clients", value: String(rows.length - activeCount), icon: AlertCircle, color: COLORS.danger },
+  ];
+
+  const openAdd = () => setPanel({
+    mode: "add",
+    data: { guid: "", code: "", name: "", countryId: "", active: true, contactGuid: "", contactName: "", email: "", phone: "" },
+  });
+  const openEdit = (r) => setPanel({
+    mode: "edit",
+    data: {
+      guid: r.guid, code: r.code, name: r.name, countryId: r.countryId || "", active: r.active,
+      contactGuid: r.contact?.guid || "", contactName: r.contact?.contactName || "", email: r.contact?.email || "", phone: r.contact?.phone || "",
+    },
+  });
+
+  const submitPanel = (form) => {
+    if (!form.code?.trim() || !form.name?.trim() || !form.contactName?.trim()) {
+      setErr("Client Code, Client Name and Contact Name are required.");
+      return;
+    }
+    setSaving(true);
+    setErr("");
+    const clientAction = form.guid ? "EDIT" : "CREATE";
+    // Sequential Patch: save the Client first, then the Contact
+    // using the resulting ClientId (same pattern as ScrClientMaster_1).
+    callClientFlow(clientAction, { guid: form.guid, code: form.code, name: form.name, countryId: form.countryId, active: form.active })
+      .then((clientRes) => {
+        let clientGuid = form.guid;
+        if (!clientGuid) {
+          const match = clientRes.data.find((c) => c.code === form.code.trim());
+          clientGuid = match ? match.guid : "";
+        }
+        const contactAction = form.contactGuid ? "EDIT" : "CREATE";
+        return callClientContactFlow(contactAction, {
+          guid: form.contactGuid, clientId: clientGuid,
+          contactName: form.contactName, email: form.email, phone: form.phone, active: form.active,
+        });
+      })
+      .then(() => refresh())
+      .then(() => {
+        setSaving(false);
+        setPanel(null);
+        setToast(form.guid ? "Client updated." : "Client added.");
+      })
+      .catch((e) => {
+        setSaving(false);
+        setErr(e.message);
+      });
+  };
+
+  const confirmDeleteRow = () => {
+    if (!confirmDelete) return;
+    setDeleting(true);
+    // Contact carries the FK to Client, so it must be deleted first.
+    // If the contact is already gone (stale guid, deleted out-of-band, etc.)
+    // the flow's Delete action fails the whole run — swallow that specific
+    // case so it doesn't block deleting the Client itself.
+    const contactGuid = confirmDelete.contact?.guid;
+    const deleteContact = contactGuid
+      ? callClientContactFlow("DELETE", { guid: contactGuid }).catch((e) => {
+          console.warn("Contact delete failed (continuing to delete client):", e.message);
+        })
+      : Promise.resolve();
+    deleteContact
+      .then(() => callClientFlow("DELETE", { guid: confirmDelete.guid }))
+      .then(() => refresh())
+      .then(() => {
+        setDeleting(false);
+        setConfirmDelete(null);
+        setToast("Client deleted.");
+      })
+      .catch((e) => {
+        setDeleting(false);
+        setToast(`Delete failed: ${e.message}`);
+      });
+  };
+
+  return (
+    <div style={{ flex: 1, display: "flex", overflow: "hidden", position: "relative" }}>
+      <div style={{ flex: 1, padding: 26, overflowY: "auto" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 18 }}>
+          <div>
+            <div style={{ fontFamily: "Sora, sans-serif", fontSize: 20, fontWeight: 700, color: COLORS.text }}>Client Master</div>
+            <div style={{ color: COLORS.textMuted, fontSize: 13.5 }}>Client and primary contact, managed together</div>
+          </div>
+          <button
+            onClick={openAdd}
+            style={{
+              display: "flex", alignItems: "center", gap: 7, background: COLORS.accent, color: "#fff", border: "none",
+              borderRadius: 9, padding: "10px 16px", fontSize: 13.5, fontWeight: 700, cursor: "pointer",
+            }}
+          >
+            <Plus size={15} /> Add Client
+          </button>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 14, marginBottom: 16 }}>
+          {kpis.map((k) => {
+            const Icon = k.icon;
+            return (
+              <div key={k.label} style={cardStyle}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <span style={{ color: COLORS.textMuted, fontSize: 12.5, fontWeight: 600 }}>{k.label}</span>
+                  <span style={{ width: 30, height: 30, borderRadius: 8, background: `${k.color}1F`, color: k.color, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <Icon size={15} />
+                  </span>
+                </div>
+                <div style={{ fontFamily: "Sora, sans-serif", fontSize: 26, fontWeight: 700, color: COLORS.text, marginTop: 10 }}>{k.value}</div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={{ ...cardStyle, padding: 0, overflow: "hidden" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 16px", borderBottom: `1px solid ${COLORS.border}` }}>
+            <div style={{ fontWeight: 700, fontSize: 14, color: COLORS.text }}>Clients <span style={{ color: COLORS.textMuted, fontWeight: 500 }}>({filtered.length})</span></div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "7px 11px", width: 260 }}>
+                <Search size={14} color={COLORS.textMuted} />
+                <input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search by client, code or contact"
+                  style={{ border: "none", outline: "none", fontSize: 13, width: "100%", fontFamily: "Inter, sans-serif" }}
+                />
+              </div>
+              <button onClick={refresh} style={{ display: "flex", alignItems: "center", gap: 6, border: `1px solid ${COLORS.border}`, background: "#fff", borderRadius: 8, padding: "0 12px", fontSize: 12.5, cursor: "pointer", color: COLORS.text }}>
+                <RefreshCw size={13} className={loading ? "spin" : ""} /> Refresh
+              </button>
+            </div>
+          </div>
+
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ background: COLORS.bg }}>
+                {["Client Code", "Client Name", "Contact Name", "Email", "Phone", "Status", ""].map((h) => (
+                  <th key={h} style={{ textAlign: "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr><td colSpan={7} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>
+                  <Loader2 size={18} className="spin" style={{ verticalAlign: "middle", marginRight: 8 }} /> Loading clients…
+                </td></tr>
+              ) : listError ? (
+                <tr><td colSpan={7} style={{ padding: 40, textAlign: "center" }}>
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, color: COLORS.danger, fontSize: 13 }}>
+                      <AlertCircle size={16} /> Couldn't load clients: {listError}
+                    </div>
+                    <button onClick={refresh} style={{ display: "flex", alignItems: "center", gap: 6, border: `1px solid ${COLORS.border}`, background: "#fff", borderRadius: 8, padding: "6px 14px", fontSize: 12.5, cursor: "pointer", color: COLORS.text }}>
+                      <RefreshCw size={13} /> Retry
+                    </button>
+                  </div>
+                </td></tr>
+              ) : filtered.length === 0 ? (
+                <tr><td colSpan={7} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>No clients match your search.</td></tr>
+              ) : filtered.map((r, i) => (
+                <tr key={r.id} style={{ borderTop: `1px solid ${COLORS.border}`, background: i % 2 ? "#FAFBFD" : "#fff" }}>
+                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text, fontWeight: 600 }}>{r.code}</td>
+                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text }}>{r.name}</td>
+                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text }}>{r.contact?.contactName || "—"}</td>
+                  <td style={{ padding: "11px 16px", fontSize: 13, color: COLORS.textMuted }}>{r.contact?.email || "—"}</td>
+                  <td style={{ padding: "11px 16px", fontSize: 13, color: COLORS.textMuted }}>{r.contact?.phone || "—"}</td>
+                  <td style={{ padding: "11px 16px" }}><StatusBadge active={r.active} /></td>
+                  <td style={{ padding: "11px 16px", textAlign: "right" }}>
+                    <div style={{ display: "inline-flex", gap: 8 }}>
+                      <button
+                        onClick={() => openEdit(r)}
+                        style={{ display: "inline-flex", alignItems: "center", gap: 6, background: COLORS.accentSoft, color: COLORS.accent, border: "none", borderRadius: 7, padding: "6px 11px", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}
+                      >
+                        <Pencil size={12} /> Edit
+                      </button>
+                      <button
+                        onClick={() => setConfirmDelete(r)}
+                        style={{ display: "inline-flex", alignItems: "center", gap: 6, background: COLORS.dangerSoft, color: COLORS.danger, border: "none", borderRadius: 7, padding: "6px 11px", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}
+                      >
+                        <Trash2 size={12} /> Delete
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {panel && (
+        <ClientPanel
+          mode={panel.mode}
+          data={panel.data}
+          countries={countries}
+          saving={saving}
+          error={err}
+          onCancel={() => { setPanel(null); setErr(""); }}
+          onSubmit={submitPanel}
+        />
+      )}
+
+      {confirmDelete && (
+        <ConfirmModal
+          title="Delete this client?"
+          message={`"${confirmDelete.name}" (${confirmDelete.code}) and its contact will be permanently removed. This can't be undone.`}
+          confirmLabel="Delete"
+          busy={deleting}
+          onCancel={() => setConfirmDelete(null)}
+          onConfirm={confirmDeleteRow}
+        />
+      )}
+
+      {toast && (
+        <div style={{
+          position: "absolute", bottom: 22, left: "50%", transform: "translateX(-50%)",
+          background: COLORS.text, color: "#fff", padding: "10px 18px", borderRadius: 9, fontSize: 13, fontWeight: 600,
+          display: "flex", alignItems: "center", gap: 8, boxShadow: "0 12px 30px rgba(0,0,0,0.2)",
+        }}>
+          <CheckCircle2 size={15} color={COLORS.success} /> {toast}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ClientPanel({ mode, data, countries, saving, error, onCancel, onSubmit }) {
+  const [form, setForm] = useState(data);
+  useEffect(() => setForm(data), [data]);
+
+  return (
+    <div style={{
+      width: 380, background: COLORS.card, borderLeft: `1px solid ${COLORS.border}`, flexShrink: 0,
+      display: "flex", flexDirection: "column", boxShadow: "-8px 0 30px rgba(15,20,40,0.06)",
+    }}>
+      <div style={{ padding: "18px 20px", borderBottom: `1px solid ${COLORS.border}`, display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 15, color: COLORS.text }}>{mode === "add" ? "Add New Client" : "Edit Client"}</div>
+          <div style={{ fontSize: 12, color: COLORS.accent, marginTop: 2 }}>Client and contact details</div>
+        </div>
+        <button onClick={onCancel} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.textMuted }}><X size={18} /></button>
+      </div>
+
+      <div style={{ padding: 20, flex: 1, overflowY: "auto" }}>
+        <div style={{ fontWeight: 700, fontSize: 12.5, color: COLORS.textMuted, textTransform: "uppercase", marginBottom: 10 }}>Client</div>
+
+        <label style={labelStyle}>Client Code*</label>
+        <input value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} placeholder="e.g. CL04" style={inputStyle} />
+
+        <label style={{ ...labelStyle, marginTop: 14 }}>Client Name*</label>
+        <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Acme Corp" style={inputStyle} />
+
+        <label style={{ ...labelStyle, marginTop: 14 }}>Country</label>
+        <select value={form.countryId} onChange={(e) => setForm({ ...form, countryId: e.target.value })} style={inputStyle}>
+          <option value="">Select country</option>
+          {countries.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+
+        <div style={{ fontWeight: 700, fontSize: 12.5, color: COLORS.textMuted, textTransform: "uppercase", margin: "20px 0 10px" }}>Contact</div>
+
+        <label style={labelStyle}>Contact Name*</label>
+        <input value={form.contactName} onChange={(e) => setForm({ ...form, contactName: e.target.value })} placeholder="e.g. Priya Sharma" style={inputStyle} />
+
+        <label style={{ ...labelStyle, marginTop: 14 }}>Email</label>
+        <input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="e.g. priya@acme.com" style={inputStyle} />
+
+        <label style={{ ...labelStyle, marginTop: 14 }}>Phone</label>
+        <input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} placeholder="e.g. +91 98765 43210" style={inputStyle} />
+
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 20, padding: "12px 14px", border: `1px solid ${COLORS.border}`, borderRadius: 10 }}>
+          <span style={{ fontSize: 13.5, fontWeight: 600, color: COLORS.text }}>Active</span>
+          <div
+            onClick={() => setForm({ ...form, active: !form.active })}
+            style={{
+              width: 40, height: 22, borderRadius: 999, background: form.active ? COLORS.accent : "#D7DCE6",
+              position: "relative", cursor: "pointer", transition: "background 0.15s",
+            }}
+          >
+            <div style={{
+              width: 18, height: 18, borderRadius: "50%", background: "#fff", position: "absolute", top: 2,
+              left: form.active ? 20 : 2, transition: "left 0.15s", boxShadow: "0 1px 3px rgba(0,0,0,0.25)",
+            }} />
+          </div>
+        </div>
+
+        {error && (
+          <div style={{ display: "flex", gap: 8, alignItems: "center", color: COLORS.danger, fontSize: 12.5, marginTop: 16 }}>
+            <AlertCircle size={14} /> {error}
+          </div>
+        )}
+      </div>
+
+      <div style={{ padding: 16, borderTop: `1px solid ${COLORS.border}`, display: "flex", gap: 10, justifyContent: "flex-end" }}>
+        <button onClick={onCancel} style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", color: COLORS.text }}>
+          Cancel
+        </button>
+        <button
+          onClick={() => onSubmit(form)}
+          disabled={saving}
+          style={{
+            padding: "9px 18px", borderRadius: 8, border: "none", background: COLORS.accent, color: "#fff",
+            fontSize: 13, fontWeight: 700, cursor: saving ? "default" : "pointer", opacity: saving ? 0.75 : 1,
+            display: "flex", alignItems: "center", gap: 7,
+          }}
+        >
+          {saving && <Loader2 size={13} className="spin" />}
+          {saving ? "Saving…" : "Submit"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /* ============================================================
    USER SCREEN (full CRUD, entity="User")
    Mirrors CountryPage's structure; extra fields + a Department
@@ -1919,10 +2770,16 @@ function UsersPage() {
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [deleting, setDeleting] = useState(false);
 
+  const [listError, setListError] = useState("");
+
   const refresh = useCallback(() => {
     setLoading(true);
+    setListError("");
     callUserFlow("LIST").then((res) => {
       setRows(res.data);
+      setLoading(false);
+    }).catch((e) => {
+      setListError(e.message);
       setLoading(false);
     });
   }, []);
@@ -2059,6 +2916,17 @@ function UsersPage() {
               {loading ? (
                 <tr><td colSpan={7} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>
                   <Loader2 size={18} className="spin" style={{ verticalAlign: "middle", marginRight: 8 }} /> Loading users…
+                </td></tr>
+              ) : listError ? (
+                <tr><td colSpan={7} style={{ padding: 40, textAlign: "center" }}>
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, color: COLORS.danger, fontSize: 13 }}>
+                      <AlertCircle size={16} /> Couldn't load users: {listError}
+                    </div>
+                    <button onClick={refresh} style={{ display: "flex", alignItems: "center", gap: 6, border: `1px solid ${COLORS.border}`, background: "#fff", borderRadius: 8, padding: "6px 14px", fontSize: 12.5, cursor: "pointer", color: COLORS.text }}>
+                      <RefreshCw size={13} /> Retry
+                    </button>
+                  </div>
                 </td></tr>
               ) : filtered.length === 0 ? (
                 <tr><td colSpan={7} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>No users match your search.</td></tr>
@@ -2300,9 +3168,12 @@ function ProjectPulseApp() {
         {page === "user" && <UsersPage />}
         {page === "project-category" && <ProjectCategoryPage />}
         {page === "roles" && <RolesPage />}
+        {page === "billing-type" && <BillingTypePage />}
+        {page === "project-deal-status" && <DealStatusPage />}
+        {page === "client" && <ClientPage />}
         {page === "project-dashboard" && <ProjectDashboardPage />}
         {page === "resource-allocation" && <ResourceAllocationPage />}
-        {inModuleShell && !["department", "country", "user", "project-category", "roles", "project-dashboard", "resource-allocation"].includes(page) && <ModuleStub moduleKey={page} />}
+        {inModuleShell && !["department", "country", "user", "project-category", "roles", "billing-type", "project-deal-status", "client", "project-dashboard", "resource-allocation"].includes(page) && <ModuleStub moduleKey={page} />}
       </div>
       <style>{`.spin { animation: spin 0.8s linear infinite; } @keyframes spin { to { transform: rotate(360deg); } } * { box-sizing: border-box; }`}</style>
     </div>
