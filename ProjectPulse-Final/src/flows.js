@@ -1,4 +1,4 @@
-  /* ============================================================
+/* ============================================================
     POWER AUTOMATE FLOW INTEGRATION — shared by App.jsx and
     ProjectAllocation.jsx. Pulled into its own file so both can
     import it without a circular import between the two.
@@ -54,7 +54,8 @@
     against the flow's outer Switch_on_Entity "case" values):
       "Department" | "Country" | "ProjectCategory" | "Role" |
       "DealStatus" | "BillingType" | "Client" | "ClientContacts" |
-      "User" | "Project" | "ProjectResource"
+      "User" | "Project" | "ProjectResource" | "ApprovalStatus" |
+      "ProjectStatus" | "UserRoles" | "InvoiceStatus"
 
     RESPONSE SHAPES (what each entity's Select action actually
     returns — these are NOT uniform, so each wrapper below reads
@@ -70,6 +71,10 @@
       User            -> "UserID","EmpID","FirstName","LastName","Gender","JobTitle","DepartmentID","IsActive"
       Project         -> "guid","projectCode","projectName","categoryId","clientId","billingTypeId","dealStatusId","startDate","endDate","active"
       ProjectResource -> "guid","projectId","userId","roleId","allocationPct","weeklyHours","billable","startDate","endDate"
+      ApprovalStatus  -> "guid","ApprovalStatusCode","ApprovalStatusName","IsActive"   (guid = the table's int "Id" column, NOT the Guid uniqueidentifier column)
+      ProjectStatus   -> "guid","ProjectStatusCode","ProjectStatusName","IsActive"     (same "Id"-as-guid convention)
+      UserRoles       -> "guid","userId","roleId","active"                             (guid = "Id"; junction row between Users and Roles)
+      InvoiceStatus   -> "guid","InvoiceStatusCode","InvoiceStatusName","IsActive"     (guid = "Id"; run the CREATE TABLE script first if [dbo].[InvoiceStatus] doesn't exist yet, then paste in its flow branch same as ApprovalStatus/ProjectStatus)
     ============================================================ */
 
   // The app always calls the relative "/flow" path. In dev, Vite's
@@ -149,6 +154,10 @@
     Role: { codeCol: "RoleCode", nameCol: "RoleName", activeCol: "IsActive" },
     DealStatus: { codeCol: null, nameCol: "name", activeCol: "active" },
     BillingType: { codeCol: "code", nameCol: "name", activeCol: "active" },
+    ApprovalStatus: { codeCol: "ApprovalStatusCode", nameCol: "ApprovalStatusName", activeCol: "IsActive" },
+    ProjectStatus: { codeCol: "ProjectStatusCode", nameCol: "ProjectStatusName", activeCol: "IsActive" },
+    // No backing table yet — see the note in flows.js header and in ADMIN_MODULES (App.jsx).
+    InvoiceStatus: { codeCol: "InvoiceStatusCode", nameCol: "InvoiceStatusName", activeCol: "IsActive" }, // needs [dbo].[InvoiceStatus] + its flow branch — see flows.js header
   };
 
   export function callMasterDataFlow(entity, action, item = {}) {
@@ -183,6 +192,10 @@
   export const callRoleFlow = (action, role) => callMasterDataFlow("Role", action, role);
   export const callBillingTypeFlow = (action, billingType) => callMasterDataFlow("BillingType", action, billingType);
   export const callDealStatusFlow = (action, dealStatus) => callMasterDataFlow("DealStatus", action, dealStatus);
+  export const callApprovalStatusFlow = (action, item) => callMasterDataFlow("ApprovalStatus", action, item);
+  export const callProjectStatusFlow = (action, item) => callMasterDataFlow("ProjectStatus", action, item);
+  // Wired the same way as everything above, but the SQL table doesn't exist yet — see flows.js header note.
+  export const callInvoiceStatusFlow = (action, item) => callMasterDataFlow("InvoiceStatus", action, item);
 
   /* ============================================================
     USER FLOW — entity="User". Own field set (EmpID, FirstName,
@@ -346,6 +359,37 @@
           endDate: d.endDate ?? "",
           active: !!(d.active ?? false),
           resources: [], // filled in by callProjectResourceFlow, merged client-side
+        };
+      });
+      return { success: true, data: normalized };
+    });
+  }
+
+  /* ============================================================
+    USER ROLES FLOW — entity="UserRoles". Junction table between
+    Users and Roles (UserRoles.UserId, UserRoles.RoleId), plus
+    IsActive. Own field set — not the generic code/name/active
+    shape, since there's no code/name here, just two foreign keys.
+    ============================================================ */
+  export function callUserRolesFlow(action, item = {}) {
+    const body = {
+      entity: "UserRoles",
+      guid: toGuidParam(item.guid),
+      action,
+      userId: item.userId ? Number(item.userId) : null,
+      roleId: item.roleId ? Number(item.roleId) : null,
+      active: !!item.active,
+    };
+
+    return postFlow(body, "UserRoles").then((list) => {
+      const normalized = list.map((d, i) => {
+        const guid = normGuid(d.guid);
+        return {
+          id: guid !== "" ? guid : String(i),
+          guid,
+          userId: d.userId ?? "",
+          roleId: d.roleId ?? "",
+          active: !!(d.active ?? false),
         };
       });
       return { success: true, data: normalized };
