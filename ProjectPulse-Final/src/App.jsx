@@ -48,13 +48,17 @@ const ADMIN_MODULES = [
   { key: "country", label: "Country", icon: Globe2, color: "#0EA5A4", implemented: true },
   { key: "user", label: "User", icon: User, color: "#3B6FE0", implemented: true },
   { key: "project-deal-status", label: "Project Deal Status", icon: Handshake, color: "#22A06B", implemented: true },
-  { key: "approval-status", label: "Approval Status", icon: CheckCircle2, color: "#F59E0B" },
+  { key: "approval-status", label: "Approval Status", icon: CheckCircle2, color: "#F59E0B", implemented: true },
   { key: "billing-type", label: "Billing Type", icon: CalendarClock, color: "#8B5CF6", implemented: true },
   { key: "client", label: "Client", icon: Briefcase, color: "#EAB308", implemented: true },
   { key: "roles", label: "Roles", icon: Shield, color: "#8B5CF6", implemented: true },
-  { key: "invoice-status", label: "Invoice Status", icon: Receipt, color: "#3B6FE0" },
-  { key: "user-roles", label: "User Roles", icon: UserCog, color: "#0EA5A4" },
-  { key: "project-status", label: "Project Status", icon: Flag, color: "#E11D48" },
+  // Frontend + flow + normalization are ready. Requires [dbo].[InvoiceStatus] to
+  // exist in SQL and its Switch case pasted into the flow (same shape as
+  // ApprovalStatus/ProjectStatus) — run the CREATE TABLE script first if you
+  // haven't already, then paste in the flow branch before relying on this live.
+  { key: "invoice-status", label: "Invoice Status", icon: Receipt, color: "#3B6FE0", implemented: true },
+  { key: "user-roles", label: "User Roles", icon: UserCog, color: "#0EA5A4", implemented: true },
+  { key: "project-status", label: "Project Status", icon: Flag, color: "#E11D48", implemented: true },
 ];
 
 const PROJECT_MODULES = [
@@ -76,6 +80,8 @@ import {
   callDepartmentFlow, callCountryFlow, callProjectCategoryFlow,
   callRoleFlow, callClientFlow, callBillingTypeFlow, callUserFlow,
   callDealStatusFlow, callClientContactFlow, callProjectFlow,
+  callApprovalStatusFlow, callProjectStatusFlow, callUserRolesFlow,
+  callInvoiceStatusFlow,
 } from "./flows";
 
 // Cycling palette for charts that color each bar/slice individually.
@@ -1778,6 +1784,726 @@ function RolePanel({ mode, data, saving, error, onCancel, onSubmit }) {
   );
 }
 
+/* ============================================================
+   APPROVAL STATUS SCREEN — same generic code/name/active shape
+   as Roles/Department/Country, wired to entity="ApprovalStatus".
+   ============================================================ */
+function ApprovalStatusPage() {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [panel, setPanel] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+  const [toast, setToast] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+  const [listError, setListError] = useState("");
+
+  const refresh = useCallback(() => {
+    setLoading(true);
+    setListError("");
+    callApprovalStatusFlow("LIST").then((res) => {
+      setRows(res.data);
+      setLoading(false);
+    }).catch((e) => {
+      setListError(e.message);
+      setLoading(false);
+    });
+  }, []);
+
+  useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(""), 2600);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  const filtered = rows.filter((r) =>
+    (r.code || "").toLowerCase().includes(search.toLowerCase()) || (r.name || "").toLowerCase().includes(search.toLowerCase())
+  );
+  const activeCount = rows.filter((r) => r.active).length;
+
+  const kpis = [
+    { label: "Approval Statuses", value: String(rows.length), icon: CheckCircle2, color: "#F59E0B" },
+    { label: "Active", value: String(activeCount), icon: CheckCircle2, color: COLORS.success },
+    { label: "Inactive", value: String(rows.length - activeCount), icon: AlertCircle, color: COLORS.danger },
+  ];
+
+  const submitPanel = (form) => {
+    if (!form.code?.trim() || !form.name?.trim()) {
+      setErr("Code and Name are required.");
+      return;
+    }
+    setSaving(true);
+    setErr("");
+    const action = form.guid ? "EDIT" : "CREATE";
+    callApprovalStatusFlow(action, form)
+      .then((res) => {
+        setRows(res.data);
+        setSaving(false);
+        setPanel(null);
+        setToast(form.guid ? "Approval status updated." : "Approval status added.");
+      })
+      .catch((e) => {
+        setSaving(false);
+        setErr(e.message);
+      });
+  };
+
+  const confirmDeleteRow = () => {
+    if (!confirmDelete) return;
+    setDeleting(true);
+    callApprovalStatusFlow("DELETE", confirmDelete)
+      .then((res) => {
+        setRows(res.data);
+        setDeleting(false);
+        setConfirmDelete(null);
+        setToast("Approval status deleted.");
+      })
+      .catch((e) => {
+        setDeleting(false);
+        setToast(`Delete failed: ${e.message}`);
+      });
+  };
+
+  return (
+    <div style={{ flex: 1, display: "flex", overflow: "hidden", position: "relative" }}>
+      <div style={{ flex: 1, padding: 26, overflowY: "auto" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 18 }}>
+          <div>
+            <div style={{ fontFamily: "Sora, sans-serif", fontSize: 20, fontWeight: 700, color: COLORS.text }}>Approval Status Master</div>
+            <div style={{ color: COLORS.textMuted, fontSize: 13.5 }}>Add, edit and manage Approval Statuses</div>
+          </div>
+          <button
+            onClick={() => setPanel({ mode: "add", data: { guid: "", code: "", name: "", active: true } })}
+            style={{ display: "flex", alignItems: "center", gap: 7, background: COLORS.accent, color: "#fff", border: "none", borderRadius: 9, padding: "10px 16px", fontSize: 13.5, fontWeight: 700, cursor: "pointer" }}
+          >
+            <Plus size={15} /> Add Approval Status
+          </button>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 14, marginBottom: 16 }}>
+          {kpis.map((k) => {
+            const Icon = k.icon;
+            return (
+              <div key={k.label} style={cardStyle}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <span style={{ color: COLORS.textMuted, fontSize: 12.5, fontWeight: 600 }}>{k.label}</span>
+                  <span style={{ width: 30, height: 30, borderRadius: 8, background: `${k.color}1F`, color: k.color, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <Icon size={15} />
+                  </span>
+                </div>
+                <div style={{ fontFamily: "Sora, sans-serif", fontSize: 26, fontWeight: 700, color: COLORS.text, marginTop: 10 }}>{k.value}</div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={{ ...cardStyle, padding: 0, overflow: "hidden" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 16px", borderBottom: `1px solid ${COLORS.border}` }}>
+            <div style={{ fontWeight: 700, fontSize: 14, color: COLORS.text }}>Approval Statuses <span style={{ color: COLORS.textMuted, fontWeight: 500 }}>({filtered.length})</span></div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "7px 11px", width: 260 }}>
+                <Search size={14} color={COLORS.textMuted} />
+                <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by code or name" style={{ border: "none", outline: "none", fontSize: 13, width: "100%", fontFamily: "Inter, sans-serif" }} />
+              </div>
+              <button onClick={refresh} style={{ display: "flex", alignItems: "center", gap: 6, border: `1px solid ${COLORS.border}`, background: "#fff", borderRadius: 8, padding: "0 12px", fontSize: 12.5, cursor: "pointer", color: COLORS.text }}>
+                <RefreshCw size={13} className={loading ? "spin" : ""} /> Refresh
+              </button>
+            </div>
+          </div>
+
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ background: COLORS.bg }}>
+                {["Code", "Name", "Status", ""].map((h) => (
+                  <th key={h} style={{ textAlign: "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr><td colSpan={4} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>
+                  <Loader2 size={18} className="spin" style={{ verticalAlign: "middle", marginRight: 8 }} /> Loading approval statuses…
+                </td></tr>
+              ) : listError ? (
+                <tr><td colSpan={4} style={{ padding: 40, textAlign: "center" }}>
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, color: COLORS.danger, fontSize: 13 }}>
+                      <AlertCircle size={16} /> Couldn't load approval statuses: {listError}
+                    </div>
+                    <button onClick={refresh} style={{ display: "flex", alignItems: "center", gap: 6, border: `1px solid ${COLORS.border}`, background: "#fff", borderRadius: 8, padding: "6px 14px", fontSize: 12.5, cursor: "pointer", color: COLORS.text }}>
+                      <RefreshCw size={13} /> Retry
+                    </button>
+                  </div>
+                </td></tr>
+              ) : filtered.length === 0 ? (
+                <tr><td colSpan={4} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>No approval statuses match your search.</td></tr>
+              ) : filtered.map((r, i) => (
+                <tr key={r.id} style={{ borderTop: `1px solid ${COLORS.border}`, background: i % 2 ? "#FAFBFD" : "#fff" }}>
+                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text, fontWeight: 600 }}>{r.code}</td>
+                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text }}>{r.name}</td>
+                  <td style={{ padding: "11px 16px" }}><StatusBadge active={r.active} /></td>
+                  <td style={{ padding: "11px 16px", textAlign: "right" }}>
+                    <div style={{ display: "inline-flex", gap: 8 }}>
+                      <button onClick={() => setPanel({ mode: "edit", data: { ...r } })} style={{ display: "inline-flex", alignItems: "center", gap: 6, background: COLORS.accentSoft, color: COLORS.accent, border: "none", borderRadius: 7, padding: "6px 11px", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
+                        <Pencil size={12} /> Edit
+                      </button>
+                      <button onClick={() => setConfirmDelete(r)} style={{ display: "inline-flex", alignItems: "center", gap: 6, background: COLORS.dangerSoft, color: COLORS.danger, border: "none", borderRadius: 7, padding: "6px 11px", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
+                        <Trash2 size={12} /> Delete
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {panel && (
+        <ApprovalStatusPanel mode={panel.mode} data={panel.data} saving={saving} error={err} onCancel={() => { setPanel(null); setErr(""); }} onSubmit={submitPanel} />
+      )}
+
+      {confirmDelete && (
+        <ConfirmModal title="Delete this approval status?" message={`"${confirmDelete.name}" (${confirmDelete.code}) will be permanently removed. This can't be undone.`} confirmLabel="Delete" busy={deleting} onCancel={() => setConfirmDelete(null)} onConfirm={confirmDeleteRow} />
+      )}
+
+      {toast && (
+        <div style={{ position: "absolute", bottom: 22, left: "50%", transform: "translateX(-50%)", background: COLORS.text, color: "#fff", padding: "10px 18px", borderRadius: 9, fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", gap: 8, boxShadow: "0 12px 30px rgba(0,0,0,0.2)" }}>
+          <CheckCircle2 size={15} color={COLORS.success} /> {toast}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ApprovalStatusPanel({ mode, data, saving, error, onCancel, onSubmit }) {
+  const [form, setForm] = useState(data);
+  useEffect(() => setForm(data), [data]);
+
+  return (
+    <div style={{ width: 340, background: COLORS.card, borderLeft: `1px solid ${COLORS.border}`, flexShrink: 0, display: "flex", flexDirection: "column", boxShadow: "-8px 0 30px rgba(15,20,40,0.06)" }}>
+      <div style={{ padding: "18px 20px", borderBottom: `1px solid ${COLORS.border}`, display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 15, color: COLORS.text }}>{mode === "add" ? "Add Approval Status" : "Edit Approval Status"}</div>
+          <div style={{ fontSize: 12, color: COLORS.accent, marginTop: 2 }}>Fill all required fields below</div>
+        </div>
+        <button onClick={onCancel} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.textMuted }}><X size={18} /></button>
+      </div>
+
+      <div style={{ padding: 20, flex: 1, overflowY: "auto" }}>
+        <label style={labelStyle}>Code*</label>
+        <input value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} placeholder="e.g. PENDING" style={inputStyle} />
+        <label style={{ ...labelStyle, marginTop: 16 }}>Name*</label>
+        <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Pending Approval" style={inputStyle} />
+
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 20, padding: "12px 14px", border: `1px solid ${COLORS.border}`, borderRadius: 10 }}>
+          <span style={{ fontSize: 13.5, fontWeight: 600, color: COLORS.text }}>Active</span>
+          <div onClick={() => setForm({ ...form, active: !form.active })} style={{ width: 40, height: 22, borderRadius: 999, background: form.active ? COLORS.accent : "#D7DCE6", position: "relative", cursor: "pointer", transition: "background 0.15s" }}>
+            <div style={{ width: 18, height: 18, borderRadius: "50%", background: "#fff", position: "absolute", top: 2, left: form.active ? 20 : 2, transition: "left 0.15s", boxShadow: "0 1px 3px rgba(0,0,0,0.25)" }} />
+          </div>
+        </div>
+
+        {error && (
+          <div style={{ display: "flex", gap: 8, alignItems: "center", color: COLORS.danger, fontSize: 12.5, marginTop: 16 }}>
+            <AlertCircle size={14} /> {error}
+          </div>
+        )}
+      </div>
+
+      <div style={{ padding: 16, borderTop: `1px solid ${COLORS.border}`, display: "flex", gap: 10, justifyContent: "flex-end" }}>
+        <button onClick={onCancel} style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", color: COLORS.text }}>Cancel</button>
+        <button onClick={() => onSubmit(form)} disabled={saving} style={{ padding: "9px 18px", borderRadius: 8, border: "none", background: COLORS.accent, color: "#fff", fontSize: 13, fontWeight: 700, cursor: saving ? "default" : "pointer", opacity: saving ? 0.75 : 1, display: "flex", alignItems: "center", gap: 7 }}>
+          {saving && <Loader2 size={13} className="spin" />}
+          {saving ? "Saving…" : "Submit"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   PROJECT STATUS SCREEN — identical generic shape, entity="ProjectStatus".
+   ============================================================ */
+function ProjectStatusPage() {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [panel, setPanel] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+  const [toast, setToast] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+  const [listError, setListError] = useState("");
+
+  const refresh = useCallback(() => {
+    setLoading(true);
+    setListError("");
+    callProjectStatusFlow("LIST").then((res) => {
+      setRows(res.data);
+      setLoading(false);
+    }).catch((e) => {
+      setListError(e.message);
+      setLoading(false);
+    });
+  }, []);
+
+  useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(""), 2600);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  const filtered = rows.filter((r) =>
+    (r.code || "").toLowerCase().includes(search.toLowerCase()) || (r.name || "").toLowerCase().includes(search.toLowerCase())
+  );
+  const activeCount = rows.filter((r) => r.active).length;
+
+  const kpis = [
+    { label: "Project Statuses", value: String(rows.length), icon: Flag, color: "#E11D48" },
+    { label: "Active", value: String(activeCount), icon: CheckCircle2, color: COLORS.success },
+    { label: "Inactive", value: String(rows.length - activeCount), icon: AlertCircle, color: COLORS.danger },
+  ];
+
+  const submitPanel = (form) => {
+    if (!form.code?.trim() || !form.name?.trim()) {
+      setErr("Code and Name are required.");
+      return;
+    }
+    setSaving(true);
+    setErr("");
+    const action = form.guid ? "EDIT" : "CREATE";
+    callProjectStatusFlow(action, form)
+      .then((res) => {
+        setRows(res.data);
+        setSaving(false);
+        setPanel(null);
+        setToast(form.guid ? "Project status updated." : "Project status added.");
+      })
+      .catch((e) => {
+        setSaving(false);
+        setErr(e.message);
+      });
+  };
+
+  const confirmDeleteRow = () => {
+    if (!confirmDelete) return;
+    setDeleting(true);
+    callProjectStatusFlow("DELETE", confirmDelete)
+      .then((res) => {
+        setRows(res.data);
+        setDeleting(false);
+        setConfirmDelete(null);
+        setToast("Project status deleted.");
+      })
+      .catch((e) => {
+        setDeleting(false);
+        setToast(`Delete failed: ${e.message}`);
+      });
+  };
+
+  return (
+    <div style={{ flex: 1, display: "flex", overflow: "hidden", position: "relative" }}>
+      <div style={{ flex: 1, padding: 26, overflowY: "auto" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 18 }}>
+          <div>
+            <div style={{ fontFamily: "Sora, sans-serif", fontSize: 20, fontWeight: 700, color: COLORS.text }}>Project Status Master</div>
+            <div style={{ color: COLORS.textMuted, fontSize: 13.5 }}>Add, edit and manage Project Statuses</div>
+          </div>
+          <button
+            onClick={() => setPanel({ mode: "add", data: { guid: "", code: "", name: "", active: true } })}
+            style={{ display: "flex", alignItems: "center", gap: 7, background: COLORS.accent, color: "#fff", border: "none", borderRadius: 9, padding: "10px 16px", fontSize: 13.5, fontWeight: 700, cursor: "pointer" }}
+          >
+            <Plus size={15} /> Add Project Status
+          </button>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 14, marginBottom: 16 }}>
+          {kpis.map((k) => {
+            const Icon = k.icon;
+            return (
+              <div key={k.label} style={cardStyle}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <span style={{ color: COLORS.textMuted, fontSize: 12.5, fontWeight: 600 }}>{k.label}</span>
+                  <span style={{ width: 30, height: 30, borderRadius: 8, background: `${k.color}1F`, color: k.color, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <Icon size={15} />
+                  </span>
+                </div>
+                <div style={{ fontFamily: "Sora, sans-serif", fontSize: 26, fontWeight: 700, color: COLORS.text, marginTop: 10 }}>{k.value}</div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={{ ...cardStyle, padding: 0, overflow: "hidden" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 16px", borderBottom: `1px solid ${COLORS.border}` }}>
+            <div style={{ fontWeight: 700, fontSize: 14, color: COLORS.text }}>Project Statuses <span style={{ color: COLORS.textMuted, fontWeight: 500 }}>({filtered.length})</span></div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "7px 11px", width: 260 }}>
+                <Search size={14} color={COLORS.textMuted} />
+                <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by code or name" style={{ border: "none", outline: "none", fontSize: 13, width: "100%", fontFamily: "Inter, sans-serif" }} />
+              </div>
+              <button onClick={refresh} style={{ display: "flex", alignItems: "center", gap: 6, border: `1px solid ${COLORS.border}`, background: "#fff", borderRadius: 8, padding: "0 12px", fontSize: 12.5, cursor: "pointer", color: COLORS.text }}>
+                <RefreshCw size={13} className={loading ? "spin" : ""} /> Refresh
+              </button>
+            </div>
+          </div>
+
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ background: COLORS.bg }}>
+                {["Code", "Name", "Status", ""].map((h) => (
+                  <th key={h} style={{ textAlign: "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr><td colSpan={4} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>
+                  <Loader2 size={18} className="spin" style={{ verticalAlign: "middle", marginRight: 8 }} /> Loading project statuses…
+                </td></tr>
+              ) : listError ? (
+                <tr><td colSpan={4} style={{ padding: 40, textAlign: "center" }}>
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, color: COLORS.danger, fontSize: 13 }}>
+                      <AlertCircle size={16} /> Couldn't load project statuses: {listError}
+                    </div>
+                    <button onClick={refresh} style={{ display: "flex", alignItems: "center", gap: 6, border: `1px solid ${COLORS.border}`, background: "#fff", borderRadius: 8, padding: "6px 14px", fontSize: 12.5, cursor: "pointer", color: COLORS.text }}>
+                      <RefreshCw size={13} /> Retry
+                    </button>
+                  </div>
+                </td></tr>
+              ) : filtered.length === 0 ? (
+                <tr><td colSpan={4} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>No project statuses match your search.</td></tr>
+              ) : filtered.map((r, i) => (
+                <tr key={r.id} style={{ borderTop: `1px solid ${COLORS.border}`, background: i % 2 ? "#FAFBFD" : "#fff" }}>
+                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text, fontWeight: 600 }}>{r.code}</td>
+                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text }}>{r.name}</td>
+                  <td style={{ padding: "11px 16px" }}><StatusBadge active={r.active} /></td>
+                  <td style={{ padding: "11px 16px", textAlign: "right" }}>
+                    <div style={{ display: "inline-flex", gap: 8 }}>
+                      <button onClick={() => setPanel({ mode: "edit", data: { ...r } })} style={{ display: "inline-flex", alignItems: "center", gap: 6, background: COLORS.accentSoft, color: COLORS.accent, border: "none", borderRadius: 7, padding: "6px 11px", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
+                        <Pencil size={12} /> Edit
+                      </button>
+                      <button onClick={() => setConfirmDelete(r)} style={{ display: "inline-flex", alignItems: "center", gap: 6, background: COLORS.dangerSoft, color: COLORS.danger, border: "none", borderRadius: 7, padding: "6px 11px", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
+                        <Trash2 size={12} /> Delete
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {panel && (
+        <ProjectStatusPanel mode={panel.mode} data={panel.data} saving={saving} error={err} onCancel={() => { setPanel(null); setErr(""); }} onSubmit={submitPanel} />
+      )}
+
+      {confirmDelete && (
+        <ConfirmModal title="Delete this project status?" message={`"${confirmDelete.name}" (${confirmDelete.code}) will be permanently removed. This can't be undone.`} confirmLabel="Delete" busy={deleting} onCancel={() => setConfirmDelete(null)} onConfirm={confirmDeleteRow} />
+      )}
+
+      {toast && (
+        <div style={{ position: "absolute", bottom: 22, left: "50%", transform: "translateX(-50%)", background: COLORS.text, color: "#fff", padding: "10px 18px", borderRadius: 9, fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", gap: 8, boxShadow: "0 12px 30px rgba(0,0,0,0.2)" }}>
+          <CheckCircle2 size={15} color={COLORS.success} /> {toast}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProjectStatusPanel({ mode, data, saving, error, onCancel, onSubmit }) {
+  const [form, setForm] = useState(data);
+  useEffect(() => setForm(data), [data]);
+
+  return (
+    <div style={{ width: 340, background: COLORS.card, borderLeft: `1px solid ${COLORS.border}`, flexShrink: 0, display: "flex", flexDirection: "column", boxShadow: "-8px 0 30px rgba(15,20,40,0.06)" }}>
+      <div style={{ padding: "18px 20px", borderBottom: `1px solid ${COLORS.border}`, display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 15, color: COLORS.text }}>{mode === "add" ? "Add Project Status" : "Edit Project Status"}</div>
+          <div style={{ fontSize: 12, color: COLORS.accent, marginTop: 2 }}>Fill all required fields below</div>
+        </div>
+        <button onClick={onCancel} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.textMuted }}><X size={18} /></button>
+      </div>
+
+      <div style={{ padding: 20, flex: 1, overflowY: "auto" }}>
+        <label style={labelStyle}>Code*</label>
+        <input value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} placeholder="e.g. ONTRACK" style={inputStyle} />
+        <label style={{ ...labelStyle, marginTop: 16 }}>Name*</label>
+        <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. On Track" style={inputStyle} />
+
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 20, padding: "12px 14px", border: `1px solid ${COLORS.border}`, borderRadius: 10 }}>
+          <span style={{ fontSize: 13.5, fontWeight: 600, color: COLORS.text }}>Active</span>
+          <div onClick={() => setForm({ ...form, active: !form.active })} style={{ width: 40, height: 22, borderRadius: 999, background: form.active ? COLORS.accent : "#D7DCE6", position: "relative", cursor: "pointer", transition: "background 0.15s" }}>
+            <div style={{ width: 18, height: 18, borderRadius: "50%", background: "#fff", position: "absolute", top: 2, left: form.active ? 20 : 2, transition: "left 0.15s", boxShadow: "0 1px 3px rgba(0,0,0,0.25)" }} />
+          </div>
+        </div>
+
+        {error && (
+          <div style={{ display: "flex", gap: 8, alignItems: "center", color: COLORS.danger, fontSize: 12.5, marginTop: 16 }}>
+            <AlertCircle size={14} /> {error}
+          </div>
+        )}
+      </div>
+
+      <div style={{ padding: 16, borderTop: `1px solid ${COLORS.border}`, display: "flex", gap: 10, justifyContent: "flex-end" }}>
+        <button onClick={onCancel} style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", color: COLORS.text }}>Cancel</button>
+        <button onClick={() => onSubmit(form)} disabled={saving} style={{ padding: "9px 18px", borderRadius: 8, border: "none", background: COLORS.accent, color: "#fff", fontSize: 13, fontWeight: 700, cursor: saving ? "default" : "pointer", opacity: saving ? 0.75 : 1, display: "flex", alignItems: "center", gap: 7 }}>
+          {saving && <Loader2 size={13} className="spin" />}
+          {saving ? "Saving…" : "Submit"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   INVOICE STATUS SCREEN — identical generic shape, entity=
+   "InvoiceStatus". Requires [dbo].[InvoiceStatus] + its flow
+   branch to exist — see flows.js header note.
+   ============================================================ */
+function InvoiceStatusPage() {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [panel, setPanel] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+  const [toast, setToast] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+  const [listError, setListError] = useState("");
+
+  const refresh = useCallback(() => {
+    setLoading(true);
+    setListError("");
+    callInvoiceStatusFlow("LIST").then((res) => {
+      setRows(res.data);
+      setLoading(false);
+    }).catch((e) => {
+      setListError(e.message);
+      setLoading(false);
+    });
+  }, []);
+
+  useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(""), 2600);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  const filtered = rows.filter((r) =>
+    (r.code || "").toLowerCase().includes(search.toLowerCase()) || (r.name || "").toLowerCase().includes(search.toLowerCase())
+  );
+  const activeCount = rows.filter((r) => r.active).length;
+
+  const kpis = [
+    { label: "Invoice Statuses", value: String(rows.length), icon: Receipt, color: "#3B6FE0" },
+    { label: "Active", value: String(activeCount), icon: CheckCircle2, color: COLORS.success },
+    { label: "Inactive", value: String(rows.length - activeCount), icon: AlertCircle, color: COLORS.danger },
+  ];
+
+  const submitPanel = (form) => {
+    if (!form.code?.trim() || !form.name?.trim()) {
+      setErr("Code and Name are required.");
+      return;
+    }
+    setSaving(true);
+    setErr("");
+    const action = form.guid ? "EDIT" : "CREATE";
+    callInvoiceStatusFlow(action, form)
+      .then((res) => {
+        setRows(res.data);
+        setSaving(false);
+        setPanel(null);
+        setToast(form.guid ? "Invoice status updated." : "Invoice status added.");
+      })
+      .catch((e) => {
+        setSaving(false);
+        setErr(e.message);
+      });
+  };
+
+  const confirmDeleteRow = () => {
+    if (!confirmDelete) return;
+    setDeleting(true);
+    callInvoiceStatusFlow("DELETE", confirmDelete)
+      .then((res) => {
+        setRows(res.data);
+        setDeleting(false);
+        setConfirmDelete(null);
+        setToast("Invoice status deleted.");
+      })
+      .catch((e) => {
+        setDeleting(false);
+        setToast(`Delete failed: ${e.message}`);
+      });
+  };
+
+  return (
+    <div style={{ flex: 1, display: "flex", overflow: "hidden", position: "relative" }}>
+      <div style={{ flex: 1, padding: 26, overflowY: "auto" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 18 }}>
+          <div>
+            <div style={{ fontFamily: "Sora, sans-serif", fontSize: 20, fontWeight: 700, color: COLORS.text }}>Invoice Status Master</div>
+            <div style={{ color: COLORS.textMuted, fontSize: 13.5 }}>Add, edit and manage Invoice Statuses</div>
+          </div>
+          <button
+            onClick={() => setPanel({ mode: "add", data: { guid: "", code: "", name: "", active: true } })}
+            style={{ display: "flex", alignItems: "center", gap: 7, background: COLORS.accent, color: "#fff", border: "none", borderRadius: 9, padding: "10px 16px", fontSize: 13.5, fontWeight: 700, cursor: "pointer" }}
+          >
+            <Plus size={15} /> Add Invoice Status
+          </button>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 14, marginBottom: 16 }}>
+          {kpis.map((k) => {
+            const Icon = k.icon;
+            return (
+              <div key={k.label} style={cardStyle}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <span style={{ color: COLORS.textMuted, fontSize: 12.5, fontWeight: 600 }}>{k.label}</span>
+                  <span style={{ width: 30, height: 30, borderRadius: 8, background: `${k.color}1F`, color: k.color, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <Icon size={15} />
+                  </span>
+                </div>
+                <div style={{ fontFamily: "Sora, sans-serif", fontSize: 26, fontWeight: 700, color: COLORS.text, marginTop: 10 }}>{k.value}</div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={{ ...cardStyle, padding: 0, overflow: "hidden" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 16px", borderBottom: `1px solid ${COLORS.border}` }}>
+            <div style={{ fontWeight: 700, fontSize: 14, color: COLORS.text }}>Invoice Statuses <span style={{ color: COLORS.textMuted, fontWeight: 500 }}>({filtered.length})</span></div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "7px 11px", width: 260 }}>
+                <Search size={14} color={COLORS.textMuted} />
+                <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by code or name" style={{ border: "none", outline: "none", fontSize: 13, width: "100%", fontFamily: "Inter, sans-serif" }} />
+              </div>
+              <button onClick={refresh} style={{ display: "flex", alignItems: "center", gap: 6, border: `1px solid ${COLORS.border}`, background: "#fff", borderRadius: 8, padding: "0 12px", fontSize: 12.5, cursor: "pointer", color: COLORS.text }}>
+                <RefreshCw size={13} className={loading ? "spin" : ""} /> Refresh
+              </button>
+            </div>
+          </div>
+
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ background: COLORS.bg }}>
+                {["Code", "Name", "Status", ""].map((h) => (
+                  <th key={h} style={{ textAlign: "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr><td colSpan={4} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>
+                  <Loader2 size={18} className="spin" style={{ verticalAlign: "middle", marginRight: 8 }} /> Loading invoice statuses…
+                </td></tr>
+              ) : listError ? (
+                <tr><td colSpan={4} style={{ padding: 40, textAlign: "center" }}>
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, color: COLORS.danger, fontSize: 13 }}>
+                      <AlertCircle size={16} /> Couldn't load invoice statuses: {listError}
+                    </div>
+                    <button onClick={refresh} style={{ display: "flex", alignItems: "center", gap: 6, border: `1px solid ${COLORS.border}`, background: "#fff", borderRadius: 8, padding: "6px 14px", fontSize: 12.5, cursor: "pointer", color: COLORS.text }}>
+                      <RefreshCw size={13} /> Retry
+                    </button>
+                  </div>
+                </td></tr>
+              ) : filtered.length === 0 ? (
+                <tr><td colSpan={4} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>No invoice statuses match your search.</td></tr>
+              ) : filtered.map((r, i) => (
+                <tr key={r.id} style={{ borderTop: `1px solid ${COLORS.border}`, background: i % 2 ? "#FAFBFD" : "#fff" }}>
+                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text, fontWeight: 600 }}>{r.code}</td>
+                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text }}>{r.name}</td>
+                  <td style={{ padding: "11px 16px" }}><StatusBadge active={r.active} /></td>
+                  <td style={{ padding: "11px 16px", textAlign: "right" }}>
+                    <div style={{ display: "inline-flex", gap: 8 }}>
+                      <button onClick={() => setPanel({ mode: "edit", data: { ...r } })} style={{ display: "inline-flex", alignItems: "center", gap: 6, background: COLORS.accentSoft, color: COLORS.accent, border: "none", borderRadius: 7, padding: "6px 11px", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
+                        <Pencil size={12} /> Edit
+                      </button>
+                      <button onClick={() => setConfirmDelete(r)} style={{ display: "inline-flex", alignItems: "center", gap: 6, background: COLORS.dangerSoft, color: COLORS.danger, border: "none", borderRadius: 7, padding: "6px 11px", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
+                        <Trash2 size={12} /> Delete
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {panel && (
+        <InvoiceStatusPanel mode={panel.mode} data={panel.data} saving={saving} error={err} onCancel={() => { setPanel(null); setErr(""); }} onSubmit={submitPanel} />
+      )}
+
+      {confirmDelete && (
+        <ConfirmModal title="Delete this invoice status?" message={`"${confirmDelete.name}" (${confirmDelete.code}) will be permanently removed. This can't be undone.`} confirmLabel="Delete" busy={deleting} onCancel={() => setConfirmDelete(null)} onConfirm={confirmDeleteRow} />
+      )}
+
+      {toast && (
+        <div style={{ position: "absolute", bottom: 22, left: "50%", transform: "translateX(-50%)", background: COLORS.text, color: "#fff", padding: "10px 18px", borderRadius: 9, fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", gap: 8, boxShadow: "0 12px 30px rgba(0,0,0,0.2)" }}>
+          <CheckCircle2 size={15} color={COLORS.success} /> {toast}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function InvoiceStatusPanel({ mode, data, saving, error, onCancel, onSubmit }) {
+  const [form, setForm] = useState(data);
+  useEffect(() => setForm(data), [data]);
+
+  return (
+    <div style={{ width: 340, background: COLORS.card, borderLeft: `1px solid ${COLORS.border}`, flexShrink: 0, display: "flex", flexDirection: "column", boxShadow: "-8px 0 30px rgba(15,20,40,0.06)" }}>
+      <div style={{ padding: "18px 20px", borderBottom: `1px solid ${COLORS.border}`, display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 15, color: COLORS.text }}>{mode === "add" ? "Add Invoice Status" : "Edit Invoice Status"}</div>
+          <div style={{ fontSize: 12, color: COLORS.accent, marginTop: 2 }}>Fill all required fields below</div>
+        </div>
+        <button onClick={onCancel} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.textMuted }}><X size={18} /></button>
+      </div>
+
+      <div style={{ padding: 20, flex: 1, overflowY: "auto" }}>
+        <label style={labelStyle}>Code*</label>
+        <input value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} placeholder="e.g. UNPAID" style={inputStyle} />
+        <label style={{ ...labelStyle, marginTop: 16 }}>Name*</label>
+        <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Unpaid" style={inputStyle} />
+
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 20, padding: "12px 14px", border: `1px solid ${COLORS.border}`, borderRadius: 10 }}>
+          <span style={{ fontSize: 13.5, fontWeight: 600, color: COLORS.text }}>Active</span>
+          <div onClick={() => setForm({ ...form, active: !form.active })} style={{ width: 40, height: 22, borderRadius: 999, background: form.active ? COLORS.accent : "#D7DCE6", position: "relative", cursor: "pointer", transition: "background 0.15s" }}>
+            <div style={{ width: 18, height: 18, borderRadius: "50%", background: "#fff", position: "absolute", top: 2, left: form.active ? 20 : 2, transition: "left 0.15s", boxShadow: "0 1px 3px rgba(0,0,0,0.25)" }} />
+          </div>
+        </div>
+
+        {error && (
+          <div style={{ display: "flex", gap: 8, alignItems: "center", color: COLORS.danger, fontSize: 12.5, marginTop: 16 }}>
+            <AlertCircle size={14} /> {error}
+          </div>
+        )}
+      </div>
+
+      <div style={{ padding: 16, borderTop: `1px solid ${COLORS.border}`, display: "flex", gap: 10, justifyContent: "flex-end" }}>
+        <button onClick={onCancel} style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", color: COLORS.text }}>Cancel</button>
+        <button onClick={() => onSubmit(form)} disabled={saving} style={{ padding: "9px 18px", borderRadius: 8, border: "none", background: COLORS.accent, color: "#fff", fontSize: 13, fontWeight: 700, cursor: saving ? "default" : "pointer", opacity: saving ? 0.75 : 1, display: "flex", alignItems: "center", gap: 7 }}>
+          {saving && <Loader2 size={13} className="spin" />}
+          {saving ? "Saving…" : "Submit"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function BillingTypePage() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -3088,6 +3814,270 @@ function UserPanel({ mode, data, departments, saving, error, onCancel, onSubmit 
 }
 
 /* ============================================================
+   USER ROLES SCREEN — junction table (Users x Roles), entity=
+   "UserRoles". Dropdowns instead of code/name text fields, same
+   lookup-loading pattern UsersPage uses for Department.
+   ============================================================ */
+function UserRolesPage() {
+  const [rows, setRows] = useState([]);
+  const [users, setUsers] = useState([]);
+  const [roles, setRoles] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [panel, setPanel] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+  const [toast, setToast] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+  const [listError, setListError] = useState("");
+
+  const refresh = useCallback(() => {
+    setLoading(true);
+    setListError("");
+    callUserRolesFlow("LIST").then((res) => {
+      setRows(res.data);
+      setLoading(false);
+    }).catch((e) => {
+      setListError(e.message);
+      setLoading(false);
+    });
+  }, []);
+
+  useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => { callUserFlow("LIST").then((res) => setUsers(res.data)); }, []);
+  useEffect(() => { callRoleFlow("LIST").then((res) => setRoles(res.data)); }, []);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(""), 2600);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  const userName = (id) => {
+    const u = users.find((x) => String(x.id) === String(id));
+    return u ? `${u.firstName} ${u.lastName}` : "—";
+  };
+  const roleName = (id) => roles.find((r) => String(r.id) === String(id))?.name || "—";
+
+  const filtered = rows.filter((r) => {
+    const q = search.toLowerCase();
+    return userName(r.userId).toLowerCase().includes(q) || roleName(r.roleId).toLowerCase().includes(q);
+  });
+  const activeCount = rows.filter((r) => r.active).length;
+
+  const kpis = [
+    { label: "User Role Assignments", value: String(rows.length), icon: UserCog, color: "#0EA5A4" },
+    { label: "Active", value: String(activeCount), icon: CheckCircle2, color: COLORS.success },
+    { label: "Inactive", value: String(rows.length - activeCount), icon: AlertCircle, color: COLORS.danger },
+  ];
+
+  const submitPanel = (form) => {
+    if (!form.userId || !form.roleId) {
+      setErr("User and Role are required.");
+      return;
+    }
+    setSaving(true);
+    setErr("");
+    const action = form.guid ? "EDIT" : "CREATE";
+    callUserRolesFlow(action, form)
+      .then((res) => {
+        setRows(res.data);
+        setSaving(false);
+        setPanel(null);
+        setToast(form.guid ? "User role updated." : "User role added.");
+      })
+      .catch((e) => {
+        setSaving(false);
+        setErr(e.message);
+      });
+  };
+
+  const confirmDeleteRow = () => {
+    if (!confirmDelete) return;
+    setDeleting(true);
+    callUserRolesFlow("DELETE", confirmDelete)
+      .then((res) => {
+        setRows(res.data);
+        setDeleting(false);
+        setConfirmDelete(null);
+        setToast("User role deleted.");
+      })
+      .catch((e) => {
+        setDeleting(false);
+        setToast(`Delete failed: ${e.message}`);
+      });
+  };
+
+  return (
+    <div style={{ flex: 1, display: "flex", overflow: "hidden", position: "relative" }}>
+      <div style={{ flex: 1, padding: 26, overflowY: "auto" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 18 }}>
+          <div>
+            <div style={{ fontFamily: "Sora, sans-serif", fontSize: 20, fontWeight: 700, color: COLORS.text }}>User Roles</div>
+            <div style={{ color: COLORS.textMuted, fontSize: 13.5 }}>Assign Roles to Users</div>
+          </div>
+          <button
+            onClick={() => setPanel({ mode: "add", data: { guid: "", userId: "", roleId: "", active: true } })}
+            style={{ display: "flex", alignItems: "center", gap: 7, background: COLORS.accent, color: "#fff", border: "none", borderRadius: 9, padding: "10px 16px", fontSize: 13.5, fontWeight: 700, cursor: "pointer" }}
+          >
+            <Plus size={15} /> Assign Role
+          </button>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 14, marginBottom: 16 }}>
+          {kpis.map((k) => {
+            const Icon = k.icon;
+            return (
+              <div key={k.label} style={cardStyle}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <span style={{ color: COLORS.textMuted, fontSize: 12.5, fontWeight: 600 }}>{k.label}</span>
+                  <span style={{ width: 30, height: 30, borderRadius: 8, background: `${k.color}1F`, color: k.color, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <Icon size={15} />
+                  </span>
+                </div>
+                <div style={{ fontFamily: "Sora, sans-serif", fontSize: 26, fontWeight: 700, color: COLORS.text, marginTop: 10 }}>{k.value}</div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={{ ...cardStyle, padding: 0, overflow: "hidden" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 16px", borderBottom: `1px solid ${COLORS.border}` }}>
+            <div style={{ fontWeight: 700, fontSize: 14, color: COLORS.text }}>Assignments <span style={{ color: COLORS.textMuted, fontWeight: 500 }}>({filtered.length})</span></div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "7px 11px", width: 260 }}>
+                <Search size={14} color={COLORS.textMuted} />
+                <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by user or role" style={{ border: "none", outline: "none", fontSize: 13, width: "100%", fontFamily: "Inter, sans-serif" }} />
+              </div>
+              <button onClick={refresh} style={{ display: "flex", alignItems: "center", gap: 6, border: `1px solid ${COLORS.border}`, background: "#fff", borderRadius: 8, padding: "0 12px", fontSize: 12.5, cursor: "pointer", color: COLORS.text }}>
+                <RefreshCw size={13} className={loading ? "spin" : ""} /> Refresh
+              </button>
+            </div>
+          </div>
+
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ background: COLORS.bg }}>
+                {["User", "Role", "Status", ""].map((h) => (
+                  <th key={h} style={{ textAlign: "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr><td colSpan={4} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>
+                  <Loader2 size={18} className="spin" style={{ verticalAlign: "middle", marginRight: 8 }} /> Loading user roles…
+                </td></tr>
+              ) : listError ? (
+                <tr><td colSpan={4} style={{ padding: 40, textAlign: "center" }}>
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, color: COLORS.danger, fontSize: 13 }}>
+                      <AlertCircle size={16} /> Couldn't load user roles: {listError}
+                    </div>
+                    <button onClick={refresh} style={{ display: "flex", alignItems: "center", gap: 6, border: `1px solid ${COLORS.border}`, background: "#fff", borderRadius: 8, padding: "6px 14px", fontSize: 12.5, cursor: "pointer", color: COLORS.text }}>
+                      <RefreshCw size={13} /> Retry
+                    </button>
+                  </div>
+                </td></tr>
+              ) : filtered.length === 0 ? (
+                <tr><td colSpan={4} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>No user roles match your search.</td></tr>
+              ) : filtered.map((r, i) => (
+                <tr key={r.id} style={{ borderTop: `1px solid ${COLORS.border}`, background: i % 2 ? "#FAFBFD" : "#fff" }}>
+                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text, fontWeight: 600 }}>{userName(r.userId)}</td>
+                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text }}>{roleName(r.roleId)}</td>
+                  <td style={{ padding: "11px 16px" }}><StatusBadge active={r.active} /></td>
+                  <td style={{ padding: "11px 16px", textAlign: "right" }}>
+                    <div style={{ display: "inline-flex", gap: 8 }}>
+                      <button onClick={() => setPanel({ mode: "edit", data: { ...r } })} style={{ display: "inline-flex", alignItems: "center", gap: 6, background: COLORS.accentSoft, color: COLORS.accent, border: "none", borderRadius: 7, padding: "6px 11px", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
+                        <Pencil size={12} /> Edit
+                      </button>
+                      <button onClick={() => setConfirmDelete(r)} style={{ display: "inline-flex", alignItems: "center", gap: 6, background: COLORS.dangerSoft, color: COLORS.danger, border: "none", borderRadius: 7, padding: "6px 11px", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
+                        <Trash2 size={12} /> Delete
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {panel && (
+        <UserRolesPanel mode={panel.mode} data={panel.data} users={users} roles={roles} saving={saving} error={err} onCancel={() => { setPanel(null); setErr(""); }} onSubmit={submitPanel} />
+      )}
+
+      {confirmDelete && (
+        <ConfirmModal title="Remove this role assignment?" message={`"${userName(confirmDelete.userId)}" will lose the "${roleName(confirmDelete.roleId)}" role. This can't be undone.`} confirmLabel="Delete" busy={deleting} onCancel={() => setConfirmDelete(null)} onConfirm={confirmDeleteRow} />
+      )}
+
+      {toast && (
+        <div style={{ position: "absolute", bottom: 22, left: "50%", transform: "translateX(-50%)", background: COLORS.text, color: "#fff", padding: "10px 18px", borderRadius: 9, fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", gap: 8, boxShadow: "0 12px 30px rgba(0,0,0,0.2)" }}>
+          <CheckCircle2 size={15} color={COLORS.success} /> {toast}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function UserRolesPanel({ mode, data, users, roles, saving, error, onCancel, onSubmit }) {
+  const [form, setForm] = useState(data);
+  useEffect(() => setForm(data), [data]);
+
+  return (
+    <div style={{ width: 340, background: COLORS.card, borderLeft: `1px solid ${COLORS.border}`, flexShrink: 0, display: "flex", flexDirection: "column", boxShadow: "-8px 0 30px rgba(15,20,40,0.06)" }}>
+      <div style={{ padding: "18px 20px", borderBottom: `1px solid ${COLORS.border}`, display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 15, color: COLORS.text }}>{mode === "add" ? "Assign Role" : "Edit Assignment"}</div>
+          <div style={{ fontSize: 12, color: COLORS.accent, marginTop: 2 }}>Fill all required fields below</div>
+        </div>
+        <button onClick={onCancel} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.textMuted }}><X size={18} /></button>
+      </div>
+
+      <div style={{ padding: 20, flex: 1, overflowY: "auto" }}>
+        <label style={labelStyle}>User*</label>
+        <select value={form.userId || ""} onChange={(e) => setForm({ ...form, userId: e.target.value })} style={inputStyle}>
+          <option value="">Select user</option>
+          {users.map((u) => (
+            <option key={u.id} value={u.id}>{u.firstName} {u.lastName}</option>
+          ))}
+        </select>
+
+        <label style={{ ...labelStyle, marginTop: 16 }}>Role*</label>
+        <select value={form.roleId || ""} onChange={(e) => setForm({ ...form, roleId: e.target.value })} style={inputStyle}>
+          <option value="">Select role</option>
+          {roles.map((r) => (
+            <option key={r.id} value={r.id}>{r.name}</option>
+          ))}
+        </select>
+
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 20, padding: "12px 14px", border: `1px solid ${COLORS.border}`, borderRadius: 10 }}>
+          <span style={{ fontSize: 13.5, fontWeight: 600, color: COLORS.text }}>Active</span>
+          <div onClick={() => setForm({ ...form, active: !form.active })} style={{ width: 40, height: 22, borderRadius: 999, background: form.active ? COLORS.accent : "#D7DCE6", position: "relative", cursor: "pointer", transition: "background 0.15s" }}>
+            <div style={{ width: 18, height: 18, borderRadius: "50%", background: "#fff", position: "absolute", top: 2, left: form.active ? 20 : 2, transition: "left 0.15s", boxShadow: "0 1px 3px rgba(0,0,0,0.25)" }} />
+          </div>
+        </div>
+
+        {error && (
+          <div style={{ display: "flex", gap: 8, alignItems: "center", color: COLORS.danger, fontSize: 12.5, marginTop: 16 }}>
+            <AlertCircle size={14} /> {error}
+          </div>
+        )}
+      </div>
+
+      <div style={{ padding: 16, borderTop: `1px solid ${COLORS.border}`, display: "flex", gap: 10, justifyContent: "flex-end" }}>
+        <button onClick={onCancel} style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", color: COLORS.text }}>Cancel</button>
+        <button onClick={() => onSubmit(form)} disabled={saving} style={{ padding: "9px 18px", borderRadius: 8, border: "none", background: COLORS.accent, color: "#fff", fontSize: 13, fontWeight: 700, cursor: saving ? "default" : "pointer", opacity: saving ? 0.75 : 1, display: "flex", alignItems: "center", gap: 7 }}>
+          {saving && <Loader2 size={13} className="spin" />}
+          {saving ? "Saving…" : "Submit"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
    GENERIC STUB PAGE for not-yet-built modules
    ============================================================ */
 function ModuleStub({ moduleKey }) {
@@ -3171,9 +4161,13 @@ function ProjectPulseApp() {
         {page === "billing-type" && <BillingTypePage />}
         {page === "project-deal-status" && <DealStatusPage />}
         {page === "client" && <ClientPage />}
+        {page === "approval-status" && <ApprovalStatusPage />}
+        {page === "project-status" && <ProjectStatusPage />}
+        {page === "invoice-status" && <InvoiceStatusPage />}
+        {page === "user-roles" && <UserRolesPage />}
         {page === "project-dashboard" && <ProjectDashboardPage />}
         {page === "resource-allocation" && <ResourceAllocationPage />}
-        {inModuleShell && !["department", "country", "user", "project-category", "roles", "billing-type", "project-deal-status", "client", "project-dashboard", "resource-allocation"].includes(page) && <ModuleStub moduleKey={page} />}
+        {inModuleShell && !["department", "country", "user", "project-category", "roles", "billing-type", "project-deal-status", "client", "approval-status", "project-status", "invoice-status", "user-roles", "project-dashboard", "resource-allocation"].includes(page) && <ModuleStub moduleKey={page} />}
       </div>
       <style>{`.spin { animation: spin 0.8s linear infinite; } @keyframes spin { to { transform: rotate(360deg); } } * { box-sizing: border-box; }`}</style>
     </div>
