@@ -81,7 +81,30 @@
   // proxy (vite.config.js) forwards it. In production, a redirect
   // rule does the same job — so no code branching is needed.
   export const FLOW_URL = "/flow";
+export const AUDIT_FLOW_URL = "/auditflow";
 
+export function callAuditEmailFlow(entry) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), FLOW_TIMEOUT_MS);
+
+  return fetch(AUDIT_FLOW_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      entity: entry.screen,
+      action: entry.action,
+      data: entry.record,
+      by: entry.user,
+      dateTime: entry.timestamp,
+    }),
+    signal: controller.signal,
+  })
+    .then((res) => {
+      if (!res.ok) throw new Error(`Audit flow returned ${res.status}`);
+    })
+    .catch((e) => console.error("Audit email failed:", e.message))
+    .finally(() => clearTimeout(timeoutId));
+}
   // If the network/proxy silently hangs (misconfigured proxy, dropped
   // connection, corporate SSL interception, etc.) fetch's promise can sit
   // pending forever — which is why "Loading…" screens never resolve.
