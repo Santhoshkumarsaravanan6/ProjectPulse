@@ -3,6 +3,7 @@ import {
   Plus, Pencil, Trash2, X, Search, AlertCircle, CheckCircle2, Loader2,
   User, FolderKanban, CalendarClock, Layers, Briefcase, Users2,
   Percent, Clock, LayoutGrid, CalendarRange, ChevronRight, BadgeCheck, List,
+  RefreshCw, Inbox, ArrowUpDown, Filter, X as XIcon,
 } from "lucide-react";
 import {
   callProjectCategoryFlow, callClientFlow, callBillingTypeFlow,
@@ -22,12 +23,62 @@ const COLORS = {
 const CHART_PALETTE = ["#3B6FE0", "#8B5CF6", "#0EA5A4", "#F59E0B", "#22A06B", "#E11D48"];
 
 const cardStyle = { background: COLORS.card, borderRadius: 14, padding: 18, border: `1px solid ${COLORS.border}` };
-const cardTitle = { display: "flex", alignItems: "center", gap: 7, fontSize: 13.5, fontWeight: 700, color: COLORS.text, marginBottom: 12 };
 const inputStyle = {
   width: "100%", padding: "10px 12px", borderRadius: 9, border: `1px solid ${COLORS.border}`,
   fontSize: 13.5, outline: "none", boxSizing: "border-box", fontFamily: "Inter, sans-serif", color: COLORS.text,
 };
 const labelStyle = { display: "block", fontSize: 12.5, fontWeight: 700, color: COLORS.text, marginBottom: 6 };
+
+/* ============================================================
+   LOCAL AUDIT LOG — same localStorage key as App.jsx (pp_audit_log)
+   so entries from these two screens show up in the shared Audit
+   Log screen. Kept as a small standalone copy here (rather than
+   importing from App.jsx) to avoid a circular import, since
+   App.jsx is the one that imports this file.
+   ============================================================ */
+const LS_AUDIT_LOG = "pp_audit_log";
+const LS_CURRENT_USER = "pp_current_user";
+
+function lsGet(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch (e) {
+    return fallback;
+  }
+}
+function lsSet(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch (e) { /* storage unavailable — fail silently, non-critical */ }
+}
+function logAudit(screen, action, record) {
+  const entry = {
+    guid: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    screen, action, record: record || "—",
+    user: lsGet(LS_CURRENT_USER, "Administrator"),
+    timestamp: new Date().toISOString(),
+  };
+  const existing = lsGet(LS_AUDIT_LOG, []);
+  existing.unshift(entry);
+  lsSet(LS_AUDIT_LOG, existing.slice(0, 3000));
+}
+
+// Friendly empty state — used everywhere instead of surfacing raw
+// fetch/technical errors to the user.
+function EmptyState({ icon: Icon = Inbox, message = "No data available.", onRetry }) {
+  return (
+    <div style={{ padding: 40, textAlign: "center" }}>
+      <Icon size={22} style={{ opacity: 0.4, marginBottom: 8, color: COLORS.textMuted }} />
+      <div style={{ color: COLORS.textMuted, fontSize: 13.5 }}>{message}</div>
+      {onRetry && (
+        <button onClick={onRetry} style={{ marginTop: 10, display: "inline-flex", alignItems: "center", gap: 6, border: `1px solid ${COLORS.border}`, background: "#fff", borderRadius: 8, padding: "6px 14px", fontSize: 12.5, cursor: "pointer", color: COLORS.text }}>
+          <RefreshCw size={13} /> Retry
+        </button>
+      )}
+    </div>
+  );
+}
 
 function StatusBadge({ active, onLabel = "Active", offLabel = "Inactive" }) {
   return (
@@ -431,7 +482,7 @@ export function ProjectDashboardPage() {
   const [toast, setToast] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(null);
 
-  const filtered = projects.filter((p) =>
+  const filtered = loadError ? [] : projects.filter((p) =>
     p.projectName.toLowerCase().includes(search.toLowerCase()) || p.projectCode.toLowerCase().includes(search.toLowerCase())
   );
 
@@ -494,6 +545,7 @@ export function ProjectDashboardPage() {
       .then(() => {
         setSaving(false);
         setPanel(null);
+        logAudit("Project", form.guid ? "Update" : "Create", form.projectName || form.projectCode || "record");
         setToast(form.guid ? "Project updated." : "Project added.");
       })
       .catch((e) => {
@@ -516,6 +568,7 @@ export function ProjectDashboardPage() {
       .then(() => callProjectFlow("DELETE", { guid: confirmDelete.guid }))
       .then(() => refresh())
       .then(() => {
+        logAudit("Project", "Delete", confirmDelete.projectName || confirmDelete.projectCode || "record");
         setToast("Project deleted.");
         setConfirmDelete(null);
       })
@@ -534,18 +587,6 @@ export function ProjectDashboardPage() {
             <Plus size={15} /> Add Project
           </button>
         </div>
-
-        {loadError && (
-          <div style={{ display: "flex", alignItems: "center", gap: 8, background: COLORS.dangerSoft, color: COLORS.danger, borderRadius: 10, padding: "10px 14px", fontSize: 13, marginBottom: 16 }}>
-            <AlertCircle size={15} /> Couldn't load projects: {loadError}
-            <button onClick={refresh} style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 5, border: "none", background: "none", color: COLORS.danger, fontWeight: 700, fontSize: 12.5, cursor: "pointer" }}>Retry</button>
-          </div>
-        )}
-        {lookups.error && (
-          <div style={{ display: "flex", alignItems: "center", gap: 8, background: COLORS.dangerSoft, color: COLORS.danger, borderRadius: 10, padding: "10px 14px", fontSize: 13, marginBottom: 16 }}>
-            <AlertCircle size={15} /> Couldn't load dropdown data (category/client/billing type/user/role): {lookups.error}
-          </div>
-        )}
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 14, marginBottom: 18 }}>
           {kpis.map((k) => {
@@ -592,8 +633,10 @@ export function ProjectDashboardPage() {
                   <tr><td colSpan={9} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>
                     <Loader2 size={18} className="spin" style={{ verticalAlign: "middle", marginRight: 8 }} /> Loading projects…
                   </td></tr>
+                ) : loadError ? (
+                  <tr><td colSpan={9}><EmptyState onRetry={refresh} /></td></tr>
                 ) : filtered.length === 0 ? (
-                  <tr><td colSpan={9} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>No projects match your search.</td></tr>
+                  <tr><td colSpan={9} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>No data available.</td></tr>
                 ) : filtered.map((p, i) => (
                   <tr key={p.id} style={{ borderTop: `1px solid ${COLORS.border}`, background: i % 2 ? "#FAFBFD" : "#fff", cursor: "pointer" }} onClick={() => setDetail(p)}>
                     <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text, fontWeight: 600 }}>{p.projectCode}</td>
@@ -625,8 +668,10 @@ export function ProjectDashboardPage() {
             <div style={{ ...cardStyle, gridColumn: "1/-1", textAlign: "center", color: COLORS.textMuted, padding: 40 }}>
               <Loader2 size={18} className="spin" style={{ verticalAlign: "middle", marginRight: 8 }} /> Loading projects…
             </div>
+          ) : loadError ? (
+            <div style={{ ...cardStyle, gridColumn: "1/-1" }}><EmptyState onRetry={refresh} /></div>
           ) : filtered.length === 0 ? (
-            <div style={{ ...cardStyle, gridColumn: "1/-1", textAlign: "center", color: COLORS.textMuted, padding: 40 }}>No projects match your search.</div>
+            <div style={{ ...cardStyle, gridColumn: "1/-1", textAlign: "center", color: COLORS.textMuted, padding: 40 }}>No data available.</div>
           ) : filtered.map((p) => (
             <div key={p.id} style={{ ...cardStyle, cursor: "pointer", display: "flex", flexDirection: "column", gap: 10 }} onClick={() => setDetail(p)}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
@@ -806,7 +851,7 @@ function TimelineView({ allocations, lookups }) {
   };
 
   if (allocations.length === 0) {
-    return <div style={{ ...cardStyle, textAlign: "center", color: COLORS.textMuted, padding: 40 }}>No allocations to plot.</div>;
+    return <div style={cardStyle}><EmptyState message="No data available." /></div>;
   }
 
   return (
@@ -842,6 +887,16 @@ function TimelineView({ allocations, lookups }) {
   );
 }
 
+// Column keys allowed for Resource Allocation grid sort.
+const SORT_FIELDS = {
+  user: (a, lookups) => userLabel(lookups.users, a.userId),
+  project: (a) => a.projectName,
+  allocation: (a) => Number(a.allocationPct) || 0,
+  hours: (a) => Number(a.weeklyHours) || 0,
+  start: (a) => a.startDate || "",
+  end: (a) => a.endDate || "",
+};
+
 export function ResourceAllocationPage() {
   const lookups = useLookups();
   const { projects, loading, error: loadError, refresh } = useProjectsWithResources();
@@ -853,14 +908,51 @@ export function ResourceAllocationPage() {
   const [toast, setToast] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(null);
 
+  // --- Filters: Employee, Project, Date range ---
+  const [showFilters, setShowFilters] = useState(false);
+  const [empFilter, setEmpFilter] = useState("");
+  const [projFilter, setProjFilter] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  // --- Sort ---
+  const [sortBy, setSortBy] = useState("start");
+  const [sortDir, setSortDir] = useState("asc"); // 'asc' | 'desc'
+
   const allocations = useMemo(() => (
     projects.flatMap((p) => p.resources.map((r) => ({ ...r, projectId: p.guid, projectName: p.projectName, projectCode: p.projectCode })))
   ), [projects]);
 
-  const filtered = allocations.filter((a) => {
+  const activeFilterCount = [empFilter, projFilter, dateFrom, dateTo].filter(Boolean).length;
+
+  const filtered = useMemo(() => {
+    if (loadError) return [];
     const q = search.toLowerCase();
-    return userLabel(lookups.users, a.userId).toLowerCase().includes(q) || a.projectName.toLowerCase().includes(q) || a.projectCode.toLowerCase().includes(q);
-  });
+    let list = allocations.filter((a) => {
+      if (q && !(userLabel(lookups.users, a.userId).toLowerCase().includes(q) || a.projectName.toLowerCase().includes(q) || a.projectCode.toLowerCase().includes(q))) return false;
+      if (empFilter && String(a.userId) !== String(empFilter)) return false;
+      if (projFilter && String(a.projectId) !== String(projFilter)) return false;
+      if (dateFrom && a.endDate && a.endDate < dateFrom) return false;
+      if (dateTo && a.startDate && a.startDate > dateTo) return false;
+      return true;
+    });
+    const getVal = SORT_FIELDS[sortBy] || SORT_FIELDS.start;
+    list = [...list].sort((a, b) => {
+      const va = getVal(a, lookups), vb = getVal(b, lookups);
+      const cmp = typeof va === "number" && typeof vb === "number" ? va - vb : String(va).localeCompare(String(vb));
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+    return list;
+  }, [allocations, search, empFilter, projFilter, dateFrom, dateTo, sortBy, sortDir, lookups, loadError]);
+
+  const toggleSort = (field) => {
+    if (sortBy === field) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortBy(field);
+      setSortDir("asc");
+    }
+  };
+  const clearFilters = () => { setEmpFilter(""); setProjFilter(""); setDateFrom(""); setDateTo(""); };
 
   const openAdd = () => setPanel({
     projectId: "", userId: "", roleId: "", allocationPct: 50, weeklyHours: 20, billable: true, startDate: "", endDate: "",
@@ -878,6 +970,7 @@ export function ResourceAllocationPage() {
       .then(() => {
         setSaving(false);
         setPanel(null);
+        logAudit("Resource Allocation", "Create", `${userLabel(lookups.users, form.userId)} → ${projects.find((p) => String(p.id) === String(form.projectId))?.projectName || "project"}`);
         setToast("Resource allocated.");
       })
       .catch((e) => {
@@ -891,6 +984,7 @@ export function ResourceAllocationPage() {
     callProjectResourceFlow("DELETE", { guid: confirmDelete.guid })
       .then(() => refresh())
       .then(() => {
+        logAudit("Resource Allocation", "Delete", `${userLabel(lookups.users, confirmDelete.userId)} → ${confirmDelete.projectName}`);
         setToast("Allocation removed.");
         setConfirmDelete(null);
       })
@@ -906,6 +1000,17 @@ export function ResourceAllocationPage() {
     { label: "Weekly Hours (filtered)", value: String(totalHours), icon: Clock, color: "#F59E0B" },
   ];
 
+  const SortHeader = ({ field, children }) => (
+    <th
+      onClick={() => toggleSort(field)}
+      style={{ textAlign: "left", padding: "10px 16px", fontSize: 12, color: sortBy === field ? COLORS.accent : COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3, cursor: "pointer", userSelect: "none" }}
+    >
+      <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+        {children} <ArrowUpDown size={11} style={{ opacity: sortBy === field ? 1 : 0.35 }} />
+      </span>
+    </th>
+  );
+
   return (
     <div style={{ flex: 1, display: "flex", overflow: "hidden", position: "relative" }}>
       <div style={{ flex: 1, padding: 26, overflowY: "auto" }}>
@@ -918,18 +1023,6 @@ export function ResourceAllocationPage() {
             <Plus size={15} /> Add Allocation
           </button>
         </div>
-
-        {loadError && (
-          <div style={{ display: "flex", alignItems: "center", gap: 8, background: COLORS.dangerSoft, color: COLORS.danger, borderRadius: 10, padding: "10px 14px", fontSize: 13, marginBottom: 16 }}>
-            <AlertCircle size={15} /> Couldn't load allocations: {loadError}
-            <button onClick={refresh} style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 5, border: "none", background: "none", color: COLORS.danger, fontWeight: 700, fontSize: 12.5, cursor: "pointer" }}>Retry</button>
-          </div>
-        )}
-        {lookups.error && (
-          <div style={{ display: "flex", alignItems: "center", gap: 8, background: COLORS.dangerSoft, color: COLORS.danger, borderRadius: 10, padding: "10px 14px", fontSize: 13, marginBottom: 16 }}>
-            <AlertCircle size={15} /> Couldn't load dropdown data (project/user/role): {lookups.error}
-          </div>
-        )}
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 14, marginBottom: 16 }}>
           {kpis.map((k) => {
@@ -946,29 +1039,77 @@ export function ResourceAllocationPage() {
           })}
         </div>
 
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "9px 12px", width: 300, background: COLORS.card }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "9px 12px", width: 260, background: COLORS.card }}>
             <Search size={14} color={COLORS.textMuted} />
             <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by user or project" style={{ border: "none", outline: "none", fontSize: 13, width: "100%", fontFamily: "Inter, sans-serif" }} />
           </div>
-          <div style={{ display: "flex", border: `1px solid ${COLORS.border}`, borderRadius: 8, overflow: "hidden" }}>
-            <button onClick={() => setView("grid")} style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", border: "none", background: view === "grid" ? COLORS.accent : "#fff", color: view === "grid" ? "#fff" : COLORS.text, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
-              <LayoutGrid size={13} /> Grid
+
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <button onClick={() => setShowFilters((v) => !v)} style={{
+              display: "flex", alignItems: "center", gap: 6, border: `1px solid ${showFilters ? COLORS.accent : COLORS.border}`,
+              background: showFilters ? COLORS.accentSoft : "#fff", color: showFilters ? COLORS.accent : COLORS.text,
+              borderRadius: 8, padding: "8px 14px", fontSize: 12.5, fontWeight: 600, cursor: "pointer",
+            }}>
+              <Filter size={13} /> Filters{activeFilterCount > 0 ? ` (${activeFilterCount})` : ""}
             </button>
-            <button onClick={() => setView("timeline")} style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", border: "none", background: view === "timeline" ? COLORS.accent : "#fff", color: view === "timeline" ? "#fff" : COLORS.text, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
-              <CalendarRange size={13} /> Timeline
-            </button>
+
+            <div style={{ display: "flex", border: `1px solid ${COLORS.border}`, borderRadius: 8, overflow: "hidden" }}>
+              <button onClick={() => setView("grid")} style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", border: "none", background: view === "grid" ? COLORS.accent : "#fff", color: view === "grid" ? "#fff" : COLORS.text, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
+                <LayoutGrid size={13} /> Grid
+              </button>
+              <button onClick={() => setView("timeline")} style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", border: "none", background: view === "timeline" ? COLORS.accent : "#fff", color: view === "timeline" ? "#fff" : COLORS.text, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
+                <CalendarRange size={13} /> Timeline
+              </button>
+            </div>
           </div>
         </div>
+
+        {showFilters && (
+          <div style={{ ...cardStyle, display: "flex", flexWrap: "wrap", gap: 12, alignItems: "flex-end", marginBottom: 14 }}>
+            <div style={{ minWidth: 180 }}>
+              <label style={{ ...labelStyle, fontSize: 11.5, marginBottom: 4 }}>Employee</label>
+              <select value={empFilter} onChange={(e) => setEmpFilter(e.target.value)} style={inputStyle}>
+                <option value="">All employees</option>
+                {lookups.users.map((u) => <option key={u.id} value={u.id}>{u.firstName} {u.lastName}</option>)}
+              </select>
+            </div>
+            <div style={{ minWidth: 180 }}>
+              <label style={{ ...labelStyle, fontSize: 11.5, marginBottom: 4 }}>Project</label>
+              <select value={projFilter} onChange={(e) => setProjFilter(e.target.value)} style={inputStyle}>
+                <option value="">All projects</option>
+                {projects.map((p) => <option key={p.id} value={p.id}>{p.projectName}</option>)}
+              </select>
+            </div>
+            <div style={{ minWidth: 150 }}>
+              <label style={{ ...labelStyle, fontSize: 11.5, marginBottom: 4 }}>From</label>
+              <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} style={inputStyle} />
+            </div>
+            <div style={{ minWidth: 150 }}>
+              <label style={{ ...labelStyle, fontSize: 11.5, marginBottom: 4 }}>To</label>
+              <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} style={inputStyle} />
+            </div>
+            {activeFilterCount > 0 && (
+              <button onClick={clearFilters} style={{ display: "flex", alignItems: "center", gap: 5, border: "none", background: "none", color: COLORS.danger, fontSize: 12.5, fontWeight: 600, cursor: "pointer", padding: "10px 4px" }}>
+                <XIcon size={13} /> Clear
+              </button>
+            )}
+          </div>
+        )}
 
         {view === "grid" ? (
           <div style={{ ...cardStyle, padding: 0, overflow: "hidden" }}>
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead>
                 <tr style={{ background: COLORS.bg }}>
-                  {["User", "Project", "Role", "Allocation", "Weekly Hrs", "Billable", "Duration", ""].map((h) => (
-                    <th key={h} style={{ textAlign: "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
-                  ))}
+                  <SortHeader field="user">User</SortHeader>
+                  <SortHeader field="project">Project</SortHeader>
+                  <th style={{ textAlign: "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>Role</th>
+                  <SortHeader field="allocation">Allocation</SortHeader>
+                  <SortHeader field="hours">Weekly Hrs</SortHeader>
+                  <th style={{ textAlign: "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>Billable</th>
+                  <SortHeader field="start">Duration</SortHeader>
+                  <th style={{ padding: "10px 16px" }}></th>
                 </tr>
               </thead>
               <tbody>
@@ -976,8 +1117,10 @@ export function ResourceAllocationPage() {
                   <tr><td colSpan={8} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>
                     <Loader2 size={18} className="spin" style={{ verticalAlign: "middle", marginRight: 8 }} /> Loading allocations…
                   </td></tr>
+                ) : loadError ? (
+                  <tr><td colSpan={8}><EmptyState onRetry={refresh} /></td></tr>
                 ) : filtered.length === 0 ? (
-                  <tr><td colSpan={8} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>No allocations match your search.</td></tr>
+                  <tr><td colSpan={8} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>No data available.</td></tr>
                 ) : filtered.map((a, i) => (
                   <tr key={a.id} style={{ borderTop: `1px solid ${COLORS.border}`, background: i % 2 ? "#FAFBFD" : "#fff" }}>
                     <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text, fontWeight: 600 }}>{userLabel(lookups.users, a.userId)}</td>
@@ -997,6 +1140,8 @@ export function ResourceAllocationPage() {
               </tbody>
             </table>
           </div>
+        ) : loadError ? (
+          <div style={cardStyle}><EmptyState onRetry={refresh} /></div>
         ) : (
           <TimelineView allocations={filtered} lookups={lookups} />
         )}
