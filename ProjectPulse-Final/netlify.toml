@@ -12,6 +12,14 @@
   status = 200
   force = true
 
+# Proxies "/auditflow" the same way, for the audit-log email
+# notification flow (see flows.js — callAuditEmailFlow).
+[[redirects]]
+  from = "/auditflow"
+  to = "https://93cd50265ecdea7aa4fd295cb67b42.d4.environment.api.powerplatform.com:443/powerautomate/automations/direct/cu/18/workflows/c7212c437f6d41948d051538730ea7d2/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=R9u4HkZeRsU2g0mvWkuc3POFQHqzMAa3uEnRbgDzT6E"
+  status = 200
+  force = true
+
 # All other routes go to the SPA's index.html (client-side routing)
 [[redirects]]
   from = "/*"
