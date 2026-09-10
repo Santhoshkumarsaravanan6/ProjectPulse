@@ -46,7 +46,10 @@
         "contactGuid": { "type": ["integer", "null"] },
         "contactName": { "type": "string" },
         "contactEmail": { "type": ["string", "null"] },
-        "contactPhone": { "type": ["string", "null"] }
+        "contactPhone": { "type": ["string", "null"] },
+        "dealValue": { "type": "number" },
+        "expectedCloseDate": { "type": "string" },
+        "ownerUserId": { "type": ["integer", "null"] }
       }
     }
 
@@ -55,7 +58,8 @@
       "Department" | "Country" | "ProjectCategory" | "Role" |
       "DealStatus" | "BillingType" | "Client" | "ClientContacts" |
       "User" | "Project" | "ProjectResource" | "ApprovalStatus" |
-      "ProjectStatus" | "UserRoles" | "InvoiceStatus"
+      "ProjectStatus" | "UserRoles" | "InvoiceStatus" | "PipelineProject" |
+      "ProjectResourceTxn"
 
     RESPONSE SHAPES (what each entity's Select action actually
     returns — these are NOT uniform, so each wrapper below reads
@@ -74,7 +78,9 @@
       ApprovalStatus  -> "guid","ApprovalStatusCode","ApprovalStatusName","IsActive"   (guid = the table's int "Id" column, NOT the Guid uniqueidentifier column)
       ProjectStatus   -> "guid","ProjectStatusCode","ProjectStatusName","IsActive"     (same "Id"-as-guid convention)
       UserRoles       -> "guid","userId","roleId","active"                             (guid = "Id"; junction row between Users and Roles)
-      InvoiceStatus   -> "guid","InvoiceStatusCode","InvoiceStatusName","IsActive"     (guid = "Id"; run the CREATE TABLE script first if [dbo].[InvoiceStatus] doesn't exist yet, then paste in its flow branch same as ApprovalStatus/ProjectStatus)
+      InvoiceStatus   -> "guid","InvoiceStatusCode","InvoiceStatusName","IsActive"     (guid = "InvoiceStatusId"; table + flow branch both live)
+      PipelineProject -> "guid","projectName","clientId","dealValue","dealStatusId","expectedCloseDate","ownerUserId","active"   (guid = "PipelineProjectId")
+      ProjectResourceTxn -> "guid","projectId","userId","roleId","startDate","endDate","allocationPct","active"   (guid = "ProjectResourceTxnId"; history/log table, distinct from ProjectResource)
     ============================================================ */
 
   // The app always calls the relative "/flow" path. In dev, Vite's
@@ -180,7 +186,7 @@ export function callAuditEmailFlow(entry) {
     ApprovalStatus: { codeCol: "ApprovalStatusCode", nameCol: "ApprovalStatusName", activeCol: "IsActive" },
     ProjectStatus: { codeCol: "ProjectStatusCode", nameCol: "ProjectStatusName", activeCol: "IsActive" },
     // No backing table yet — see the note in flows.js header and in ADMIN_MODULES (App.jsx).
-    InvoiceStatus: { codeCol: "InvoiceStatusCode", nameCol: "InvoiceStatusName", activeCol: "IsActive" }, // needs [dbo].[InvoiceStatus] + its flow branch — see flows.js header
+    InvoiceStatus: { codeCol: "InvoiceStatusCode", nameCol: "InvoiceStatusName", activeCol: "IsActive" },
   };
 
   export function callMasterDataFlow(entity, action, item = {}) {
@@ -217,7 +223,6 @@ export function callAuditEmailFlow(entry) {
   export const callDealStatusFlow = (action, dealStatus) => callMasterDataFlow("DealStatus", action, dealStatus);
   export const callApprovalStatusFlow = (action, item) => callMasterDataFlow("ApprovalStatus", action, item);
   export const callProjectStatusFlow = (action, item) => callMasterDataFlow("ProjectStatus", action, item);
-  // Wired the same way as everything above, but the SQL table doesn't exist yet — see flows.js header note.
   export const callInvoiceStatusFlow = (action, item) => callMasterDataFlow("InvoiceStatus", action, item);
 
   /* ============================================================
@@ -389,6 +394,46 @@ export function callAuditEmailFlow(entry) {
   }
 
   /* ============================================================
+    PIPELINE PROJECT FLOW — entity="PipelineProject". Pre-sales
+    deal pipeline (Pipeline Project screen). Own field set —
+    ProjectName, ClientId, DealValue, DealStatusId (the "Stage"),
+    ExpectedCloseDate, OwnerUserID, IsActive. Select returns
+    camelCase keys, pass-through normalization like Project.
+    ============================================================ */
+  export function callPipelineProjectFlow(action, item = {}) {
+    const body = {
+      entity: "PipelineProject",
+      guid: toGuidParam(item.guid),
+      action,
+      projectName: item.projectName || "",
+      clientId: item.clientId ? Number(item.clientId) : null,
+      dealValue: item.dealValue !== undefined && item.dealValue !== "" ? Number(item.dealValue) : 0,
+      dealStatusId: item.dealStatusId ? Number(item.dealStatusId) : null,
+      expectedCloseDate: item.expectedCloseDate || "",
+      ownerUserId: item.ownerUserId ? Number(item.ownerUserId) : null,
+      active: !!item.active,
+    };
+
+    return postFlow(body, "PipelineProject").then((list) => {
+      const normalized = list.map((d, i) => {
+        const guid = normGuid(d.guid);
+        return {
+          id: guid !== "" ? guid : String(i),
+          guid,
+          projectName: d.projectName ?? "",
+          clientId: d.clientId ?? "",
+          dealValue: d.dealValue ?? 0,
+          dealStatusId: d.dealStatusId ?? "",
+          expectedCloseDate: d.expectedCloseDate ?? "",
+          ownerUserId: d.ownerUserId ?? "",
+          active: !!(d.active ?? false),
+        };
+      });
+      return { success: true, data: normalized };
+    });
+  }
+
+  /* ============================================================
     USER ROLES FLOW — entity="UserRoles". Junction table between
     Users and Roles (UserRoles.UserId, UserRoles.RoleId), plus
     IsActive. Own field set — not the generic code/name/active
@@ -455,6 +500,47 @@ export function callAuditEmailFlow(entry) {
           billable: !!(d.billable ?? false),
           startDate: d.startDate ?? "",
           endDate: d.endDate ?? "",
+        };
+      });
+      return { success: true, data: normalized };
+    });
+  }
+
+  /* ============================================================
+    PROJECT RESOURCE TRANSACTION FLOW — entity="ProjectResourceTxn".
+    History/log table behind the "Project Resources" screen —
+    distinct from ProjectResource (the live current-allocation
+    table used by Resource Allocation / ProjectAllocation.jsx).
+    Own field set: ProjectId, UserID, RoleId, StartDate, EndDate,
+    AllocationPct, IsActive. Pass-through normalization.
+    ============================================================ */
+  export function callProjectResourceTxnFlow(action, item = {}) {
+    const body = {
+      entity: "ProjectResourceTxn",
+      guid: toGuidParam(item.guid),
+      action,
+      projectId: item.projectId ? Number(item.projectId) : null,
+      userId: item.userId ? Number(item.userId) : null,
+      roleId: item.roleId ? Number(item.roleId) : null,
+      startDate: item.startDate || "",
+      endDate: item.endDate || "",
+      allocationPct: item.allocationPct !== undefined && item.allocationPct !== "" ? Number(item.allocationPct) : 0,
+      active: !!item.active,
+    };
+
+    return postFlow(body, "ProjectResourceTxn").then((list) => {
+      const normalized = list.map((d, i) => {
+        const guid = normGuid(d.guid);
+        return {
+          id: guid !== "" ? guid : String(i),
+          guid,
+          projectId: d.projectId ?? "",
+          userId: d.userId ?? "",
+          roleId: d.roleId ?? "",
+          startDate: d.startDate ?? "",
+          endDate: d.endDate ?? "",
+          allocationPct: d.allocationPct ?? 0,
+          active: !!(d.active ?? false),
         };
       });
       return { success: true, data: normalized };
