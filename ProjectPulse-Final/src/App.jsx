@@ -837,6 +837,20 @@ function ConfirmModal({ title, message, confirmLabel, busy, onCancel, onConfirm 
 }
 
 /* ============================================================
+   DUPLICATE-CODE GUARD — shared by every master screen that has
+   a unique "code" column (Department, BillingType, Role,
+   ProjectCategory, Client, InvoiceStatus, ProjectStatus, ...).
+   Client-side pre-check so duplicates never reach the flow —
+   avoids the raw 502/404 upstream errors that were leaking
+   through, and gives a proper validation message instead.
+   ============================================================ */
+function findDuplicateCode(rows, code, currentGuid) {
+  const c = (code || "").trim().toLowerCase();
+  if (!c) return null;
+  return rows.find((r) => (r.guid || "") !== (currentGuid || "") && (r.code || "").trim().toLowerCase() === c) || null;
+}
+
+/* ============================================================
    DEPARTMENTS SCREEN (full CRUD wired to the mock flow)
    ============================================================ */
 function DepartmentsPage() {
@@ -875,10 +889,21 @@ function DepartmentsPage() {
   const filtered = rows.filter((r) =>
     (r.code || "").toLowerCase().includes(search.toLowerCase()) || (r.name || "").toLowerCase().includes(search.toLowerCase())
   );
+  const activeCount = rows.filter((r) => r.active).length;
+
+  const kpis = [
+    { label: "Total Departments", value: String(rows.length), icon: Building2, color: "#6366F1" },
+    { label: "Active Departments", value: String(activeCount), icon: CheckCircle2, color: COLORS.success },
+    { label: "Inactive Departments", value: String(rows.length - activeCount), icon: AlertCircle, color: COLORS.danger },
+  ];
 
   const submitPanel = (form) => {
     if (!form.code?.trim() || !form.name?.trim()) {
       setErr("Department Code and Name are required.");
+      return;
+    }
+    if (findDuplicateCode(rows, form.code, form.guid)) {
+      setErr("Department Code already exists.");
       return;
     }
     setSaving(true);
@@ -934,6 +959,23 @@ function DepartmentsPage() {
           </button>
         </div>
 
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 14, marginBottom: 16 }}>
+          {kpis.map((k) => {
+            const Icon = k.icon;
+            return (
+              <div key={k.label} style={cardStyle}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <span style={{ color: COLORS.textMuted, fontSize: 12.5, fontWeight: 600 }}>{k.label}</span>
+                  <span style={{ width: 30, height: 30, borderRadius: 8, background: `${k.color}1F`, color: k.color, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <Icon size={15} />
+                  </span>
+                </div>
+                <div style={{ fontFamily: "Sora, sans-serif", fontSize: 26, fontWeight: 700, color: COLORS.text, marginTop: 10 }}>{k.value}</div>
+              </div>
+            );
+          })}
+        </div>
+
         <div style={{ ...cardStyle, padding: 0, overflow: "hidden" }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 16px", borderBottom: `1px solid ${COLORS.border}` }}>
             <div style={{ fontWeight: 700, fontSize: 14, color: COLORS.text }}>Departments <span style={{ color: COLORS.textMuted, fontWeight: 500 }}>({filtered.length})</span></div>
@@ -956,8 +998,8 @@ function DepartmentsPage() {
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ background: COLORS.bg }}>
-                {["Department Code", "Department Name", "Status", ""].map((h) => (
-                  <th key={h} style={{ textAlign: "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
+                {["Department Code", "Department Name", "Status","Actions"].map((h) => (
+                  <th key={h} style={{ textAlign: h === "Actions" ? "right" : "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
                 ))}
               </tr>
             </thead>
@@ -1097,7 +1139,7 @@ function DepartmentPanel({ mode, data, saving, error, onCancel, onSubmit }) {
       </div>
 
       <div style={{ padding: 16, borderTop: `1px solid ${COLORS.border}`, display: "flex", gap: 10, justifyContent: "flex-end" }}>
-        <button onClick={onCancel} style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", color: COLORS.text }}>
+        <button onClick={() => setForm(data)} style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", color: COLORS.text }}>
           Cancel
         </button>
         <button
@@ -1266,8 +1308,8 @@ function CountryPage() {
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ background: COLORS.bg }}>
-                {["Country Code", "Country Name", "Status", ""].map((h) => (
-                  <th key={h} style={{ textAlign: "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
+                {["Country Code", "Country Name", "Status","Actions"].map((h) => (
+                  <th key={h} style={{ textAlign: h === "Actions" ? "right" : "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
                 ))}
               </tr>
             </thead>
@@ -1407,7 +1449,7 @@ function CountryPanel({ mode, data, saving, error, onCancel, onSubmit }) {
       </div>
 
       <div style={{ padding: 16, borderTop: `1px solid ${COLORS.border}`, display: "flex", gap: 10, justifyContent: "flex-end" }}>
-        <button onClick={onCancel} style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", color: COLORS.text }}>
+        <button onClick={() => setForm(data)} style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", color: COLORS.text }}>
           Cancel
         </button>
         <button
@@ -1478,6 +1520,10 @@ function ProjectCategoryPage() {
   const submitPanel = (form) => {
     if (!form.code?.trim() || !form.name?.trim()) {
       setErr("Category Code and Name are required.");
+      return;
+    }
+    if (findDuplicateCode(rows, form.code, form.guid)) {
+      setErr("Category Code already exists.");
       return;
     }
     setSaving(true);
@@ -1572,8 +1618,8 @@ function ProjectCategoryPage() {
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ background: COLORS.bg }}>
-                {["Category Code", "Category Name", "Status", ""].map((h) => (
-                  <th key={h} style={{ textAlign: "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
+                {["Category Code", "Category Name", "Status","Actions"].map((h) => (
+                  <th key={h} style={{ textAlign: h === "Actions" ? "right" : "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
                 ))}
               </tr>
             </thead>
@@ -1713,7 +1759,7 @@ function ProjectCategoryPanel({ mode, data, saving, error, onCancel, onSubmit })
       </div>
 
       <div style={{ padding: 16, borderTop: `1px solid ${COLORS.border}`, display: "flex", gap: 10, justifyContent: "flex-end" }}>
-        <button onClick={onCancel} style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", color: COLORS.text }}>
+        <button onClick={() => setForm(data)} style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", color: COLORS.text }}>
           Cancel
         </button>
         <button
@@ -1784,6 +1830,10 @@ function RolesPage() {
   const submitPanel = (form) => {
     if (!form.code?.trim() || !form.name?.trim()) {
       setErr("Role Code and Name are required.");
+      return;
+    }
+    if (findDuplicateCode(rows, form.code, form.guid)) {
+      setErr("Role Code already exists. Please enter a unique Role Code.");
       return;
     }
     setSaving(true);
@@ -1878,8 +1928,8 @@ function RolesPage() {
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ background: COLORS.bg }}>
-                {["Role Code", "Role Name", "Status", ""].map((h) => (
-                  <th key={h} style={{ textAlign: "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
+                {["Role Code", "Role Name", "Status","Actions"].map((h) => (
+                  <th key={h} style={{ textAlign: h === "Actions" ? "right" : "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
                 ))}
               </tr>
             </thead>
@@ -2019,7 +2069,7 @@ function RolePanel({ mode, data, saving, error, onCancel, onSubmit }) {
       </div>
 
       <div style={{ padding: 16, borderTop: `1px solid ${COLORS.border}`, display: "flex", gap: 10, justifyContent: "flex-end" }}>
-        <button onClick={onCancel} style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", color: COLORS.text }}>
+        <button onClick={() => setForm(data)} style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", color: COLORS.text }}>
           Cancel
         </button>
         <button
@@ -2174,8 +2224,8 @@ function ApprovalStatusPage() {
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ background: COLORS.bg }}>
-                {["Code", "Name", "Status", ""].map((h) => (
-                  <th key={h} style={{ textAlign: "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
+                {["Code", "Name", "Status", "Actions"].map((h) => (
+                  <th key={h} style={{ textAlign: h === "Actions" ? "right" : "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
                 ))}
               </tr>
             </thead>
@@ -2269,7 +2319,7 @@ function ApprovalStatusPanel({ mode, data, saving, error, onCancel, onSubmit }) 
       </div>
 
       <div style={{ padding: 16, borderTop: `1px solid ${COLORS.border}`, display: "flex", gap: 10, justifyContent: "flex-end" }}>
-        <button onClick={onCancel} style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", color: COLORS.text }}>Cancel</button>
+        <button onClick={() => setForm(data)} style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", color: COLORS.text }}>Cancel</button>
         <button onClick={() => onSubmit(form)} disabled={saving} style={{ padding: "9px 18px", borderRadius: 8, border: "none", background: COLORS.accent, color: "#fff", fontSize: 13, fontWeight: 700, cursor: saving ? "default" : "pointer", opacity: saving ? 0.75 : 1, display: "flex", alignItems: "center", gap: 7 }}>
           {saving && <Loader2 size={13} className="spin" />}
           {saving ? "Saving…" : "Submit"}
@@ -2320,13 +2370,17 @@ function ProjectStatusPage() {
 
   const kpis = [
     { label: "Project Statuses", value: String(rows.length), icon: Flag, color: "#E11D48" },
-    { label: "Active", value: String(activeCount), icon: CheckCircle2, color: COLORS.success },
-    { label: "Inactive", value: String(rows.length - activeCount), icon: AlertCircle, color: COLORS.danger },
+    { label: "Active Project Statuses", value: String(activeCount), icon: CheckCircle2, color: COLORS.success },
+    { label: "Inactive Project Statuses", value: String(rows.length - activeCount), icon: AlertCircle, color: COLORS.danger },
   ];
 
   const submitPanel = (form) => {
     if (!form.code?.trim() || !form.name?.trim()) {
       setErr("Code and Name are required.");
+      return;
+    }
+    if (findDuplicateCode(rows, form.code, form.guid)) {
+      setErr("Project Status Code already exists. Please enter a unique Code.");
       return;
     }
     setSaving(true);
@@ -2413,8 +2467,8 @@ function ProjectStatusPage() {
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ background: COLORS.bg }}>
-                {["Code", "Name", "Status", ""].map((h) => (
-                  <th key={h} style={{ textAlign: "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
+                {["Code", "Name", "Status", "Actions"].map((h) => (
+                  <th key={h} style={{ textAlign: h === "Actions" ? "right" : "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
                 ))}
               </tr>
             </thead>
@@ -2508,7 +2562,7 @@ function ProjectStatusPanel({ mode, data, saving, error, onCancel, onSubmit }) {
       </div>
 
       <div style={{ padding: 16, borderTop: `1px solid ${COLORS.border}`, display: "flex", gap: 10, justifyContent: "flex-end" }}>
-        <button onClick={onCancel} style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", color: COLORS.text }}>Cancel</button>
+        <button onClick={() => setForm(data)} style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", color: COLORS.text }}>Cancel</button>
         <button onClick={() => onSubmit(form)} disabled={saving} style={{ padding: "9px 18px", borderRadius: 8, border: "none", background: COLORS.accent, color: "#fff", fontSize: 13, fontWeight: 700, cursor: saving ? "default" : "pointer", opacity: saving ? 0.75 : 1, display: "flex", alignItems: "center", gap: 7 }}>
           {saving && <Loader2 size={13} className="spin" />}
           {saving ? "Saving…" : "Submit"}
@@ -2636,13 +2690,13 @@ function InvoiceStatusPage() {
       color: COLORS.accent,
     },
     {
-      label: "Active",
+      label: "Active Invoice Statuses",
       value: String(activeCount),
       icon: CheckCircle2,
       color: COLORS.success,
     },
     {
-      label: "Inactive",
+      label: "Inactive Invoice Statuses",
       value: String(rows.length - activeCount),
       icon: AlertCircle,
       color: COLORS.danger,
@@ -2656,6 +2710,10 @@ function InvoiceStatusPage() {
   const submitPanel = (form) => {
     if (!form.code?.trim() || !form.name?.trim()) {
       setErr("Invoice Status Code and Name are required.");
+      return;
+    }
+    if (findDuplicateCode(rows, form.code, form.guid)) {
+      setErr("Invoice Status Code already exists. Please enter a unique Invoice Status Code.");
       return;
     }
 
@@ -3238,8 +3296,8 @@ function LinkInvoicePage() {
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ background: COLORS.bg }}>
-                {["Invoice #", "Client", "Project", "Amount", "Due Date", "Status", ""].map((h) => (
-                  <th key={h} style={{ textAlign: "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
+                {["Invoice #", "Client", "Project", "Amount", "Due Date", "Status","Actions"].map((h) => (
+                  <th key={h} style={{ textAlign: h === "Actions" ? "right" : "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
                 ))}
               </tr>
             </thead>
@@ -3320,7 +3378,7 @@ function LinkInvoicePanel({ mode, data, saving, error, onCancel, onSubmit }) {
         {error && <div style={{ display: "flex", gap: 8, alignItems: "center", color: COLORS.danger, fontSize: 12.5, marginTop: 16 }}><AlertCircle size={14} /> {error}</div>}
       </div>
       <div style={{ padding: 16, borderTop: `1px solid ${COLORS.border}`, display: "flex", gap: 10, justifyContent: "flex-end" }}>
-        <button onClick={onCancel} style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", color: COLORS.text }}>Cancel</button>
+        <button onClick={() => setForm(data)} style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", color: COLORS.text }}>Cancel</button>
         <button onClick={() => onSubmit(form)} disabled={saving} style={{ padding: "9px 18px", borderRadius: 8, border: "none", background: COLORS.accent, color: "#fff", fontSize: 13, fontWeight: 700, cursor: saving ? "default" : "pointer", opacity: saving ? 0.75 : 1, display: "flex", alignItems: "center", gap: 7 }}>
           {saving && <Loader2 size={13} className="spin" />}
           {saving ? "Saving…" : "Submit"}
@@ -3437,8 +3495,8 @@ function PipelineProjectPage() {
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ background: COLORS.bg }}>
-                {["Project", "Client", "Deal Value", "Stage", "Expected Close", "Owner", ""].map((h) => (
-                  <th key={h} style={{ textAlign: "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
+                {["Project", "Client", "Deal Value", "Stage", "Expected Close", "Owner","Actions"].map((h) => (
+                  <th key={h} style={{ textAlign: h === "Actions" ? "right" : "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
                 ))}
               </tr>
             </thead>
@@ -3522,7 +3580,7 @@ function PipelineProjectPanel({ mode, data, saving, error, onCancel, onSubmit })
         {error && <div style={{ display: "flex", gap: 8, alignItems: "center", color: COLORS.danger, fontSize: 12.5, marginTop: 16 }}><AlertCircle size={14} /> {error}</div>}
       </div>
       <div style={{ padding: 16, borderTop: `1px solid ${COLORS.border}`, display: "flex", gap: 10, justifyContent: "flex-end" }}>
-        <button onClick={onCancel} style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", color: COLORS.text }}>Cancel</button>
+        <button onClick={() => setForm(data)} style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", color: COLORS.text }}>Cancel</button>
         <button onClick={() => onSubmit(form)} disabled={saving} style={{ padding: "9px 18px", borderRadius: 8, border: "none", background: COLORS.accent, color: "#fff", fontSize: 13, fontWeight: 700, cursor: saving ? "default" : "pointer", opacity: saving ? 0.75 : 1, display: "flex", alignItems: "center", gap: 7 }}>
           {saving && <Loader2 size={13} className="spin" />}
           {saving ? "Saving…" : "Submit"}
@@ -3638,8 +3696,8 @@ function ProjectResourcesTxnPage() {
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ background: COLORS.bg }}>
-                {["Resource", "Project", "Role", "Start Date", "End Date", "Allocation %", ""].map((h) => (
-                  <th key={h} style={{ textAlign: "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
+                {["Resource", "Project", "Role", "Start Date", "End Date", "Allocation %","Actions"].map((h) => (
+                  <th key={h} style={{ textAlign: h === "Actions" ? "right" : "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
                 ))}
               </tr>
             </thead>
@@ -3717,7 +3775,7 @@ function ProjectResourcesTxnPanel({ mode, data, saving, error, onCancel, onSubmi
         {error && <div style={{ display: "flex", gap: 8, alignItems: "center", color: COLORS.danger, fontSize: 12.5, marginTop: 16 }}><AlertCircle size={14} /> {error}</div>}
       </div>
       <div style={{ padding: 16, borderTop: `1px solid ${COLORS.border}`, display: "flex", gap: 10, justifyContent: "flex-end" }}>
-        <button onClick={onCancel} style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", color: COLORS.text }}>Cancel</button>
+        <button onClick={() => setForm(data)} style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", color: COLORS.text }}>Cancel</button>
         <button onClick={() => onSubmit(form)} disabled={saving} style={{ padding: "9px 18px", borderRadius: 8, border: "none", background: COLORS.accent, color: "#fff", fontSize: 13, fontWeight: 700, cursor: saving ? "default" : "pointer", opacity: saving ? 0.75 : 1, display: "flex", alignItems: "center", gap: 7 }}>
           {saving && <Loader2 size={13} className="spin" />}
           {saving ? "Saving…" : "Submit"}
@@ -3833,8 +3891,8 @@ onClick={() => setPanel({ mode: "add", data: { guid: "", docName: "", project: "
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ background: COLORS.bg }}>
-               {["Document", "Project", "Type", "Uploaded By", "Upload Date", "File", ""].map((h) => (
-  <th key={h} style={{ textAlign: "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
+               {["Document", "Project", "Type", "Uploaded By", "Upload Date", "File","Actions"].map((h) => (
+  <th key={h} style={{ textAlign: h === "Actions" ? "right" : "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
 ))}
               </tr>
             </thead>
@@ -3958,7 +4016,7 @@ function ProjectDocumentPanel({ mode, data, saving, error, onCancel, onSubmit })
 )}
       </div>
       <div style={{ padding: 16, borderTop: `1px solid ${COLORS.border}`, display: "flex", gap: 10, justifyContent: "flex-end" }}>
-        <button onClick={onCancel} style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", color: COLORS.text }}>Cancel</button>
+        <button onClick={() => setForm(data)} style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", color: COLORS.text }}>Cancel</button>
         <button onClick={() => onSubmit(form)} disabled={saving} style={{ padding: "9px 18px", borderRadius: 8, border: "none", background: COLORS.accent, color: "#fff", fontSize: 13, fontWeight: 700, cursor: saving ? "default" : "pointer", opacity: saving ? 0.75 : 1, display: "flex", alignItems: "center", gap: 7 }}>
           {saving && <Loader2 size={13} className="spin" />}
           {saving ? "Saving…" : "Submit"}
@@ -4003,7 +4061,7 @@ function InvoiceStatusPanel({ mode, data, saving, error, onCancel, onSubmit }) {
       </div>
 
       <div style={{ padding: 16, borderTop: `1px solid ${COLORS.border}`, display: "flex", gap: 10, justifyContent: "flex-end" }}>
-        <button onClick={onCancel} style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", color: COLORS.text }}>Cancel</button>
+        <button onClick={() => setForm(data)} style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", color: COLORS.text }}>Cancel</button>
         <button onClick={() => onSubmit(form)} disabled={saving} style={{ padding: "9px 18px", borderRadius: 8, border: "none", background: COLORS.accent, color: "#fff", fontSize: 13, fontWeight: 700, cursor: saving ? "default" : "pointer", opacity: saving ? 0.75 : 1, display: "flex", alignItems: "center", gap: 7 }}>
           {saving && <Loader2 size={13} className="spin" />}
           {saving ? "Saving…" : "Submit"}
@@ -4060,6 +4118,10 @@ function BillingTypePage() {
   const submitPanel = (form) => {
     if (!form.code?.trim() || !form.name?.trim()) {
       setErr("Billing Type Code and Name are required.");
+      return;
+    }
+    if (findDuplicateCode(rows, form.code, form.guid)) {
+      setErr("Billing Type Code already exists. Please enter a unique Billing Type Code.");
       return;
     }
     setSaving(true);
@@ -4154,8 +4216,8 @@ function BillingTypePage() {
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ background: COLORS.bg }}>
-                {["Billing Type Code", "Billing Type Name", "Status", ""].map((h) => (
-                  <th key={h} style={{ textAlign: "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
+                {["Billing Type Code", "Billing Type Name", "Status","Actions"].map((h) => (
+                  <th key={h} style={{ textAlign: h === "Actions" ? "right" : "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
                 ))}
               </tr>
             </thead>
@@ -4295,7 +4357,7 @@ function BillingTypePanel({ mode, data, saving, error, onCancel, onSubmit }) {
       </div>
 
       <div style={{ padding: 16, borderTop: `1px solid ${COLORS.border}`, display: "flex", gap: 10, justifyContent: "flex-end" }}>
-        <button onClick={onCancel} style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", color: COLORS.text }}>
+        <button onClick={() => setForm(data)} style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", color: COLORS.text }}>
           Cancel
         </button>
         <button
@@ -4464,8 +4526,8 @@ function DealStatusPage() {
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ background: COLORS.bg }}>
-                {["Deal Status Name", "Status", ""].map((h) => (
-                  <th key={h} style={{ textAlign: "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
+                {["Deal Status Name", "Status","Actions"].map((h) => (
+                  <th key={h} style={{ textAlign: h === "Actions" ? "right" : "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
                 ))}
               </tr>
             </thead>
@@ -4597,7 +4659,7 @@ function DealStatusPanel({ mode, data, saving, error, onCancel, onSubmit }) {
       </div>
 
       <div style={{ padding: 16, borderTop: `1px solid ${COLORS.border}`, display: "flex", gap: 10, justifyContent: "flex-end" }}>
-        <button onClick={onCancel} style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", color: COLORS.text }}>
+        <button onClick={() => setForm(data)} style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", color: COLORS.text }}>
           Cancel
         </button>
         <button
@@ -4694,6 +4756,10 @@ function ClientPage() {
   const submitPanel = (form) => {
     if (!form.code?.trim() || !form.name?.trim() || !form.contactName?.trim()) {
       setErr("Client Code, Client Name and Contact Name are required.");
+      return;
+    }
+    if (findDuplicateCode(rows, form.code, form.guid)) {
+      setErr("Client Code already exists. Please enter a unique Client Code.");
       return;
     }
     setSaving(true);
@@ -4813,8 +4879,8 @@ function ClientPage() {
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ background: COLORS.bg }}>
-                {["Client Code", "Client Name", "Contact Name", "Email", "Phone", "Status", ""].map((h) => (
-                  <th key={h} style={{ textAlign: "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
+                {["Client Code", "Client Name", "Contact Name", "Email", "Phone", "Status","Actions"].map((h) => (
+                  <th key={h} style={{ textAlign: h === "Actions" ? "right" : "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
                 ))}
               </tr>
             </thead>
@@ -4968,7 +5034,7 @@ function ClientPanel({ mode, data, countries, saving, error, onCancel, onSubmit 
       </div>
 
       <div style={{ padding: 16, borderTop: `1px solid ${COLORS.border}`, display: "flex", gap: 10, justifyContent: "flex-end" }}>
-        <button onClick={onCancel} style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", color: COLORS.text }}>
+        <button onClick={() => setForm(data)} style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", color: COLORS.text }}>
           Cancel
         </button>
         <button
@@ -5144,8 +5210,8 @@ function UsersPage() {
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ background: COLORS.bg }}>
-                {["Emp ID", "Name", "Job Title", "Department", "Gender", "Status", ""].map((h) => (
-                  <th key={h} style={{ textAlign: "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
+                {["Emp ID", "Name", "Job Title", "Department", "Gender", "Status","Actions"].map((h) => (
+                  <th key={h} style={{ textAlign: h === "Actions" ? "right" : "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
                 ))}
               </tr>
             </thead>
@@ -5302,7 +5368,7 @@ function UserPanel({ mode, data, departments, saving, error, onCancel, onSubmit 
       </div>
 
       <div style={{ padding: 16, borderTop: `1px solid ${COLORS.border}`, display: "flex", gap: 10, justifyContent: "flex-end" }}>
-        <button onClick={onCancel} style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", color: COLORS.text }}>
+        <button onClick={() => setForm(data)} style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", color: COLORS.text }}>
           Cancel
         </button>
         <button
@@ -5377,8 +5443,8 @@ function UserRolesPage() {
 
   const kpis = [
     { label: "User Role Assignments", value: String(rows.length), icon: UserCog, color: "#0EA5A4" },
-    { label: "Active", value: String(activeCount), icon: CheckCircle2, color: COLORS.success },
-    { label: "Inactive", value: String(rows.length - activeCount), icon: AlertCircle, color: COLORS.danger },
+    { label: "Active Assignments", value: String(activeCount), icon: CheckCircle2, color: COLORS.success },
+    { label: "Inactive Assignments", value: String(rows.length - activeCount), icon: AlertCircle, color: COLORS.danger },
   ];
 
   const submitPanel = (form) => {
@@ -5470,8 +5536,8 @@ function UserRolesPage() {
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ background: COLORS.bg }}>
-                {["User", "Role", "Status", ""].map((h) => (
-                  <th key={h} style={{ textAlign: "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
+                {["User", "Role", "Status","Actions"].map((h) => (
+                  <th key={h} style={{ textAlign: h === "Actions" ? "right" : "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
                 ))}
               </tr>
             </thead>
@@ -5576,7 +5642,7 @@ function UserRolesPanel({ mode, data, users, roles, saving, error, onCancel, onS
       </div>
 
       <div style={{ padding: 16, borderTop: `1px solid ${COLORS.border}`, display: "flex", gap: 10, justifyContent: "flex-end" }}>
-        <button onClick={onCancel} style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", color: COLORS.text }}>Cancel</button>
+        <button onClick={() => setForm(data)} style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", color: COLORS.text }}>Cancel</button>
         <button onClick={() => onSubmit(form)} disabled={saving} style={{ padding: "9px 18px", borderRadius: 8, border: "none", background: COLORS.accent, color: "#fff", fontSize: 13, fontWeight: 700, cursor: saving ? "default" : "pointer", opacity: saving ? 0.75 : 1, display: "flex", alignItems: "center", gap: 7 }}>
           {saving && <Loader2 size={13} className="spin" />}
           {saving ? "Saving…" : "Submit"}
@@ -5700,8 +5766,8 @@ function TimesheetApprovalPage() {
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ background: COLORS.bg }}>
-                {["Employee", "Project", "Week Ending", "Hours", "Status", ""].map((h) => (
-                  <th key={h} style={{ textAlign: "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
+                {["Employee", "Project", "Week Ending", "Hours", "Status","Actions"].map((h) => (
+                  <th key={h} style={{ textAlign: h === "Actions" ? "right" : "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
                 ))}
               </tr>
             </thead>
@@ -5842,8 +5908,8 @@ function ProjectApprovalPage() {
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ background: COLORS.bg }}>
-                {["Project", "Requested By", "Deal Value", "Status", ""].map((h) => (
-                  <th key={h} style={{ textAlign: "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
+                {["Project", "Requested By", "Deal Value", "Status","Actions"].map((h) => (
+                  <th key={h} style={{ textAlign: h === "Actions" ? "right" : "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
                 ))}
               </tr>
             </thead>
@@ -6002,7 +6068,7 @@ function AuditLogPage() {
                   Timestamp <ArrowUpDown size={11} />
                 </th>
                 {["Screen", "Action", "Record", "Employee"].map((h) => (
-                  <th key={h} style={{ textAlign: "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
+                  <th key={h} style={{ textAlign: h === "Actions" ? "right" : "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
                 ))}
               </tr>
             </thead>
