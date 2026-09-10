@@ -53,10 +53,6 @@ const ADMIN_MODULES = [
   { key: "billing-type", label: "Billing Type", icon: CalendarClock, color: "#8B5CF6", implemented: true },
   { key: "client", label: "Client", icon: Briefcase, color: "#EAB308", implemented: true },
   { key: "roles", label: "Roles", icon: Shield, color: "#8B5CF6", implemented: true },
-  // Frontend + flow + normalization are ready. Requires [dbo].[InvoiceStatus] to
-  // exist in SQL and its Switch case pasted into the flow (same shape as
-  // ApprovalStatus/ProjectStatus) — run the CREATE TABLE script first if you
-  // haven't already, then paste in the flow branch before relying on this live.
   { key: "invoice-status", label: "Invoice Status", icon: Receipt, color: "#3B6FE0", implemented: true },
   { key: "user-roles", label: "User Roles", icon: UserCog, color: "#0EA5A4", implemented: true },
   { key: "project-status", label: "Project Status", icon: Flag, color: "#E11D48", implemented: true },
@@ -95,6 +91,9 @@ import {
   callClientFlow, callBillingTypeFlow, callUserFlow, callDealStatusFlow,
   callClientContactFlow, callProjectFlow, callApprovalStatusFlow,
   callProjectStatusFlow, callUserRolesFlow, callAuditEmailFlow,
+  callInvoiceStatusFlow,
+  callPipelineProjectFlow,
+  callProjectResourceTxnFlow,
 } from "./flows";
 
 // Cycling palette for charts that color each bar/slice individually.
@@ -138,10 +137,7 @@ const LS_AUDIT_LOG = "pp_audit_log";
 const LS_TIMESHEETS = "pp_timesheets";
 const LS_PROJECT_APPROVALS = "pp_project_approvals";
 const LS_CURRENT_USER = "pp_current_user";
-const LS_INVOICE_STATUSES = "pp_invoice_statuses";
 const LS_LINK_INVOICES = "pp_link_invoices";
-const LS_PIPELINE_PROJECTS = "pp_pipeline_projects";
-const LS_PROJECT_RESOURCES_TXN = "pp_project_resources_txn";
 const LS_PROJECT_DOCUMENTS = "pp_project_documents";
 const AUDIT_EMAIL_FLOW_URL = "https://93cd50265ecdea7aa4fd295cb67b42.d4.environment.api.powerplatform.com:443/powerautomate/automations/direct/cu/18/workflows/c7212c437f6d41948d051538730ea7d2/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=R9u4HkZeRsU2g0mvWkuc3POFQHqzMAa3uEnRbgDzT6E";
 
@@ -499,6 +495,7 @@ function DashboardHome({ onOpenModule }) {
   const [clients, setClients] = useState([]);
   const [projects, setProjects] = useState([]);
   const [pipeline, setPipeline] = useState([]);
+  const [dealStatuses, setDealStatuses] = useState([]);
   const [timesheets, setTimesheets] = useState([]);
   const [approvals, setApprovals] = useState([]);
   const [invoices, setInvoices] = useState([]);
@@ -508,19 +505,20 @@ function DashboardHome({ onOpenModule }) {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    Promise.all([callDepartmentFlow("LIST"), callUserFlow("LIST"), callClientFlow("LIST"), callProjectFlow("LIST")])
-      .then(([dept, usr, cli, proj]) => {
+    Promise.all([callDepartmentFlow("LIST"), callUserFlow("LIST"), callClientFlow("LIST"), callProjectFlow("LIST"), callPipelineProjectFlow("LIST"), callDealStatusFlow("LIST")])
+      .then(([dept, usr, cli, proj, pipe, deals]) => {
         if (cancelled) return;
         setDepartments(dept.data);
         setUsers(usr.data);
         setClients(cli.data);
         setProjects(proj.data);
+        setPipeline(pipe.data);
+        setDealStatuses(deals.data);
         setLoading(false);
       })
       .catch(() => { if (!cancelled) setLoading(false); });
 
     // Local-only modules — read straight from storage (instant, no spinner needed)
-    setPipeline(lsGet(LS_PIPELINE_PROJECTS, null) || seedPipelineProjects());
     setTimesheets(lsGet(LS_TIMESHEETS, null) || seedTimesheets());
     setApprovals(lsGet(LS_PROJECT_APPROVALS, null) || seedProjectApprovals());
     setInvoices(lsGet(LS_LINK_INVOICES, null) || seedLinkInvoices());
@@ -537,9 +535,13 @@ function DashboardHome({ onOpenModule }) {
   const activeClients = clients.filter((c) => c.active).length;
 
   // --- Local-module metrics ---
-  const openPipeline = pipeline.filter((p) => p.stage !== "Won" && p.stage !== "Lost");
-  const pipelineValue = openPipeline.reduce((s, p) => s + parseCurrency(p.dealValue), 0);
-  const wonValue = pipeline.filter((p) => p.stage === "Won").reduce((s, p) => s + parseCurrency(p.dealValue), 0);
+  const dealStatusName = (id) => dealStatuses.find((d) => String(d.id) === String(id))?.name || "";
+  const openPipeline = pipeline.filter((p) => {
+    const s = dealStatusName(p.dealStatusId);
+    return s !== "Won" && s !== "Lost";
+  });
+  const pipelineValue = openPipeline.reduce((s, p) => s + Number(p.dealValue || 0), 0);
+  const wonValue = pipeline.filter((p) => dealStatusName(p.dealStatusId) === "Won").reduce((s, p) => s + Number(p.dealValue || 0), 0);
 
   const pendingTimesheets = timesheets.filter((t) => t.status === "Pending").length;
   const pendingProjectApprovals = approvals.filter((a) => a.status === "Pending").length;
@@ -578,9 +580,12 @@ function DashboardHome({ onOpenModule }) {
   }));
 
   const stageCounts = {};
-  pipeline.forEach((p) => { stageCounts[p.stage] = (stageCounts[p.stage] || 0) + 1; });
-  const pipelineByStage = ["Prospecting", "Proposal", "Negotiation", "Won", "Lost"]
-    .map((stage) => ({ name: stage, value: stageCounts[stage] || 0 }))
+  pipeline.forEach((p) => {
+    const s = dealStatusName(p.dealStatusId) || "Unspecified";
+    stageCounts[s] = (stageCounts[s] || 0) + 1;
+  });
+  const pipelineByStage = Object.entries(stageCounts)
+    .map(([name, value]) => ({ name, value }))
     .filter((s) => s.value > 0);
 
   // --- Recent activity (audit log) ---
@@ -2573,24 +2578,8 @@ function ProjectStatusPanel({ mode, data, saving, error, onCancel, onSubmit }) {
 }
 
 /* ============================================================
-   INVOICE STATUS SCREEN — identical generic shape, entity=
-   "InvoiceStatus". Requires [dbo].[InvoiceStatus] + its flow
-   branch to exist — see flows.js header note.
+   LINK INVOICE (Transaction) — localStorage only, not yet on SQL.
    ============================================================ */
-function seedInvoiceStatuses() {
-  const names = [
-    "Draft", "Submitted", "Pending Review", "Approved", "Rejected",
-    "Partially Paid", "Paid", "Overdue", "Cancelled", "On Hold",
-    "Disputed", "Refunded", "Written Off", "Under Query", "Escalated",
-    "Awaiting Approval", "Reissued", "Voided", "Closed", "Archived",
-  ];
-  return names.map((name, i) => ({
-    guid: `inv-${i + 1}`,
-    code: name.toUpperCase().replace(/\s+/g, "_"),
-    name,
-    active: i % 5 !== 4,
-  }));
-}
 function seedLinkInvoices() {
   const clients = ["Acme Corp", "Globex Ltd", "Initech", "Umbrella Inc", "Wayne Enterprises", "Stark Industries", "Northwind", "Contoso", "Fabrikam", "Cyberdyne Systems"];
   const projects = ["Devoir Portal Revamp", "Client Onboarding Tool", "HR Self-Service Portal", "Retail Analytics Suite", "Inventory Sync Engine", "Mobile Banking App", "E-Commerce Migration", "Data Warehouse Build"];
@@ -2602,35 +2591,6 @@ function seedLinkInvoices() {
     amount: `₹${(1 + (i % 9)) * 50000}`.replace(/(\d)(?=(\d{2})+\d$)/g, "$1,"),
     dueDate: `2026-${String(9 + (i % 3)).padStart(2, "0")}-${String((i % 27) + 1).padStart(2, "0")}`,
     status: i % 3 === 0 ? "Unlinked" : "Linked",
-  }));
-}
-function seedPipelineProjects() {
-  const projects = ["Retail Analytics Suite", "HR Self-Service Portal", "Mobile Banking App", "E-Commerce Migration", "Data Warehouse Build", "Fleet Tracking System", "Customer Loyalty Platform", "Field Service App", "Supply Chain Dashboard", "Smart Inventory Tool"];
-  const clients = ["Northwind", "Contoso", "Fabrikam", "Acme Corp", "Globex Ltd", "Initech", "Umbrella Inc", "Wayne Enterprises", "Stark Industries", "Cyberdyne Systems"];
-  const owners = ["Karan Mehta", "Sara Iyer", "Aditi Rao", "Priya Sharma", "Rahul Nair"];
-  const stages = ["Prospecting", "Proposal", "Negotiation", "Won", "Lost"];
-  return Array.from({ length: 20 }, (_, i) => ({
-    guid: `pp-${i + 1}`,
-    projectName: projects[i % projects.length],
-    client: clients[i % clients.length],
-    dealValue: `₹${(5 + (i % 8) * 3)},00,000`,
-    stage: stages[i % stages.length],
-    expectedCloseDate: `2026-${String(9 + (i % 4)).padStart(2, "0")}-${String((i % 27) + 1).padStart(2, "0")}`,
-    owner: owners[i % owners.length],
-  }));
-}
-function seedProjectResourcesTxn() {
-  const names = ["Aditi Rao", "Karan Mehta", "Sara Iyer", "Priya Sharma", "Rahul Nair", "Vikram Singh", "Neha Gupta", "Arjun Patel", "Divya Menon", "Sanjay Kumar"];
-  const projects = ["Devoir Portal Revamp", "Client Onboarding Tool", "HR Self-Service Portal", "Retail Analytics Suite", "Mobile Banking App", "E-Commerce Migration"];
-  const roles = ["Developer", "QA Engineer", "Business Analyst", "Project Manager", "UI/UX Designer", "DevOps Engineer"];
-  return Array.from({ length: 20 }, (_, i) => ({
-    guid: `prt-${i + 1}`,
-    resourceName: names[i % names.length],
-    project: projects[i % projects.length],
-    role: roles[i % roles.length],
-    startDate: `2026-0${(i % 6) + 1}-01`,
-    endDate: "2026-12-31",
-    allocationPct: [50, 60, 70, 80, 100][i % 5],
   }));
 }
 function seedProjectDocuments() {
@@ -2650,16 +2610,8 @@ function seedProjectDocuments() {
 }
 
 function InvoiceStatusPage() {
-  const [rows, setRows] = useState(() => {
-    const existing = lsGet(LS_INVOICE_STATUSES, null);
-
-    if (existing) return existing;
-
-    const seeded = seedInvoiceStatuses();
-    lsSet(LS_INVOICE_STATUSES, seeded);
-    return seeded;
-  });
-
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [panel, setPanel] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -2667,45 +2619,37 @@ function InvoiceStatusPage() {
   const [toast, setToast] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [deleting, setDeleting] = useState(false);
+  const [listError, setListError] = useState("");
 
+  const refresh = useCallback(() => {
+    setLoading(true);
+    setListError("");
+    callInvoiceStatusFlow("LIST").then((res) => {
+      setRows(res.data);
+      setLoading(false);
+    }).catch((e) => {
+      setListError(e.message);
+      setLoading(false);
+    });
+  }, []);
+
+  useEffect(() => { refresh(); }, [refresh]);
   useEffect(() => {
     if (!toast) return;
-
     const t = setTimeout(() => setToast(""), 2600);
     return () => clearTimeout(t);
   }, [toast]);
 
   const filtered = rows.filter((r) =>
-    (r.code || "").toLowerCase().includes(search.toLowerCase()) ||
-    (r.name || "").toLowerCase().includes(search.toLowerCase())
+    (r.code || "").toLowerCase().includes(search.toLowerCase()) || (r.name || "").toLowerCase().includes(search.toLowerCase())
   );
-
   const activeCount = rows.filter((r) => r.active).length;
 
   const kpis = [
-    {
-      label: "Invoice Statuses",
-      value: String(rows.length),
-      icon: Receipt,
-      color: COLORS.accent,
-    },
-    {
-      label: "Active Invoice Statuses",
-      value: String(activeCount),
-      icon: CheckCircle2,
-      color: COLORS.success,
-    },
-    {
-      label: "Inactive Invoice Statuses",
-      value: String(rows.length - activeCount),
-      icon: AlertCircle,
-      color: COLORS.danger,
-    },
+    { label: "Invoice Statuses", value: String(rows.length), icon: Receipt, color: COLORS.accent },
+    { label: "Active Invoice Statuses", value: String(activeCount), icon: CheckCircle2, color: COLORS.success },
+    { label: "Inactive Invoice Statuses", value: String(rows.length - activeCount), icon: AlertCircle, color: COLORS.danger },
   ];
-
-  const refresh = () => {
-    setRows(lsGet(LS_INVOICE_STATUSES, []));
-  };
 
   const submitPanel = (form) => {
     if (!form.code?.trim() || !form.name?.trim()) {
@@ -2716,480 +2660,150 @@ function InvoiceStatusPage() {
       setErr("Invoice Status Code already exists. Please enter a unique Invoice Status Code.");
       return;
     }
-
     setSaving(true);
     setErr("");
-
-    const updated = form.guid
-      ? rows.map((r) =>
-          r.guid === form.guid
-            ? {
-                ...r,
-                code: form.code.trim(),
-                name: form.name.trim(),
-                active: !!form.active,
-              }
-            : r
-        )
-      : [
-          ...rows,
-          {
-            guid: `inv-${Date.now()}-${Math.random()
-              .toString(36)
-              .slice(2, 8)}`,
-            code: form.code.trim(),
-            name: form.name.trim(),
-            active: !!form.active,
-          },
-        ];
-
-    lsSet(LS_INVOICE_STATUSES, updated);
-    setRows(updated);
-
-    setSaving(false);
-    setPanel(null);
-
-    logAudit(
-      "Invoice Status",
-      form.guid ? "Update" : "Create",
-      form.name || form.code || "record"
-    );
-
-    setToast(form.guid ? "Invoice Status updated." : "Invoice Status added.");
+    const action = form.guid ? "EDIT" : "CREATE";
+    callInvoiceStatusFlow(action, form)
+      .then((res) => {
+        setRows(res.data);
+        setSaving(false);
+        setPanel(null);
+        logAudit("Invoice Status", form.guid ? "Update" : "Create", form.name || form.code || "record");
+        setToast(form.guid ? "Invoice Status updated." : "Invoice Status added.");
+      })
+      .catch((e) => {
+        setSaving(false);
+        setErr(e.message);
+      });
   };
 
   const confirmDeleteRow = () => {
     if (!confirmDelete) return;
-
     setDeleting(true);
-
-    const updated = rows.filter((r) => r.guid !== confirmDelete.guid);
-
-    lsSet(LS_INVOICE_STATUSES, updated);
-    setRows(updated);
-
-    setDeleting(false);
-    setConfirmDelete(null);
-
-    logAudit(
-      "Invoice Status",
-      "Delete",
-      confirmDelete.name || confirmDelete.code || "record"
-    );
-
-    setToast("Invoice Status deleted.");
+    callInvoiceStatusFlow("DELETE", confirmDelete)
+      .then((res) => {
+        setRows(res.data);
+        setDeleting(false);
+        setConfirmDelete(null);
+        logAudit("Invoice Status", "Delete", confirmDelete.name || confirmDelete.code || "record");
+        setToast("Invoice Status deleted.");
+      })
+      .catch((e) => {
+        setDeleting(false);
+        setToast(`Delete failed: ${e.message}`);
+      });
   };
 
   return (
-    <div
-      style={{
-        flex: 1,
-        display: "flex",
-        overflow: "hidden",
-        position: "relative",
-      }}
-    >
+    <div style={{ flex: 1, display: "flex", overflow: "hidden", position: "relative" }}>
       <div style={{ flex: 1, padding: 26, overflowY: "auto" }}>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "flex-start",
-            marginBottom: 18,
-          }}
-        >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 18 }}>
           <div>
-            <div
-              style={{
-                fontFamily: "Sora, sans-serif",
-                fontSize: 20,
-                fontWeight: 700,
-                color: COLORS.text,
-              }}
-            >
-              Invoice Status Master
-            </div>
-
-            <div
-              style={{
-                color: COLORS.textMuted,
-                fontSize: 13.5,
-              }}
-            >
-              Add, edit and manage Invoice Statuses
-            </div>
+            <div style={{ fontFamily: "Sora, sans-serif", fontSize: 20, fontWeight: 700, color: COLORS.text }}>Invoice Status Master</div>
+            <div style={{ color: COLORS.textMuted, fontSize: 13.5 }}>Add, edit and manage Invoice Statuses</div>
           </div>
-
           <button
-            onClick={() =>
-              setPanel({
-                mode: "add",
-                data: {
-                  guid: "",
-                  code: "",
-                  name: "",
-                  active: true,
-                },
-              })
-            }
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 7,
-              background: COLORS.accent,
-              color: "#fff",
-              border: "none",
-              borderRadius: 9,
-              padding: "10px 16px",
-              fontSize: 13.5,
-              fontWeight: 700,
-              cursor: "pointer",
-            }}
+            onClick={() => setPanel({ mode: "add", data: { guid: "", code: "", name: "", active: true } })}
+            style={{ display: "flex", alignItems: "center", gap: 7, background: COLORS.accent, color: "#fff", border: "none", borderRadius: 9, padding: "10px 16px", fontSize: 13.5, fontWeight: 700, cursor: "pointer" }}
           >
-            <Plus size={15} />
-            Add Invoice Status
+            <Plus size={15} /> Add Invoice Status
           </button>
         </div>
 
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns:
-              "repeat(auto-fit, minmax(200px, 1fr))",
-            gap: 14,
-            marginBottom: 16,
-          }}
-        >
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 14, marginBottom: 16 }}>
           {kpis.map((k) => {
             const Icon = k.icon;
-
             return (
               <div key={k.label} style={cardStyle}>
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                  }}
-                >
-                  <span
-                    style={{
-                      color: COLORS.textMuted,
-                      fontSize: 12.5,
-                      fontWeight: 600,
-                    }}
-                  >
-                    {k.label}
-                  </span>
-
-                  <span
-                    style={{
-                      width: 30,
-                      height: 30,
-                      borderRadius: 8,
-                      background: `${k.color}1F`,
-                      color: k.color,
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                    }}
-                  >
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <span style={{ color: COLORS.textMuted, fontSize: 12.5, fontWeight: 600 }}>{k.label}</span>
+                  <span style={{ width: 30, height: 30, borderRadius: 8, background: `${k.color}1F`, color: k.color, display: "flex", alignItems: "center", justifyContent: "center" }}>
                     <Icon size={15} />
                   </span>
                 </div>
-
-                <div
-                  style={{
-                    fontFamily: "Sora, sans-serif",
-                    fontSize: 26,
-                    fontWeight: 700,
-                    color: COLORS.text,
-                    marginTop: 10,
-                  }}
-                >
-                  {k.value}
-                </div>
+                <div style={{ fontFamily: "Sora, sans-serif", fontSize: 26, fontWeight: 700, color: COLORS.text, marginTop: 10 }}>{k.value}</div>
               </div>
             );
           })}
         </div>
 
-        <div
-          style={{
-            ...cardStyle,
-            padding: 0,
-            overflow: "hidden",
-          }}
-        >
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              padding: "14px 16px",
-              borderBottom: `1px solid ${COLORS.border}`,
-            }}
-          >
-            <div
-              style={{
-                fontWeight: 700,
-                fontSize: 14,
-                color: COLORS.text,
-              }}
-            >
-              Invoice Statuses{" "}
-              <span
-                style={{
-                  color: COLORS.textMuted,
-                  fontWeight: 500,
-                }}
-              >
-                ({filtered.length})
-              </span>
-            </div>
-
+        <div style={{ ...cardStyle, padding: 0, overflow: "hidden" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 16px", borderBottom: `1px solid ${COLORS.border}` }}>
+            <div style={{ fontWeight: 700, fontSize: 14, color: COLORS.text }}>Invoice Statuses <span style={{ color: COLORS.textMuted, fontWeight: 500 }}>({filtered.length})</span></div>
             <div style={{ display: "flex", gap: 10 }}>
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  border: `1px solid ${COLORS.border}`,
-                  borderRadius: 8,
-                  padding: "7px 11px",
-                  width: 260,
-                }}
-              >
+              <div style={{ display: "flex", alignItems: "center", gap: 8, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "7px 11px", width: 260 }}>
                 <Search size={14} color={COLORS.textMuted} />
-
-                <input
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  placeholder="Search by code or name"
-                  style={{
-                    border: "none",
-                    outline: "none",
-                    fontSize: 13,
-                    width: "100%",
-                    fontFamily: "Inter, sans-serif",
-                  }}
-                />
+                <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by code or name" style={{ border: "none", outline: "none", fontSize: 13, width: "100%", fontFamily: "Inter, sans-serif" }} />
               </div>
-
-              <button
-                onClick={refresh}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                  border: `1px solid ${COLORS.border}`,
-                  background: "#fff",
-                  borderRadius: 8,
-                  padding: "0 12px",
-                  fontSize: 12.5,
-                  cursor: "pointer",
-                  color: COLORS.text,
-                }}
-              >
-                <RefreshCw size={13} />
-                Refresh
+              <button onClick={refresh} style={{ display: "flex", alignItems: "center", gap: 6, border: `1px solid ${COLORS.border}`, background: "#fff", borderRadius: 8, padding: "0 12px", fontSize: 12.5, cursor: "pointer", color: COLORS.text }}>
+                <RefreshCw size={13} className={loading ? "spin" : ""} /> Refresh
               </button>
             </div>
           </div>
 
-          <table
-            style={{
-              width: "100%",
-              borderCollapse: "collapse",
-            }}
-          >
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ background: COLORS.bg }}>
-                {[
-                  "Invoice Status Code",
-                  "Invoice Status Name",
-                  "Status",
-                  "",
-                ].map((h) => (
-                  <th
-                    key={h}
-                    style={{
-                      textAlign: "left",
-                      padding: "10px 16px",
-                      fontSize: 12,
-                      color: COLORS.textMuted,
-                      fontWeight: 700,
-                      textTransform: "uppercase",
-                      letterSpacing: 0.3,
-                    }}
-                  >
-                    {h}
-                  </th>
+                {["Invoice Status Code", "Invoice Status Name", "Status", "Actions"].map((h) => (
+                  <th key={h} style={{ textAlign: h === "Actions" ? "right" : "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
                 ))}
               </tr>
             </thead>
-
             <tbody>
-              {filtered.length === 0 ? (
-                <tr>
-                  <td colSpan={4}>
-                    <EmptyState
-                      icon={Receipt}
-                      message="No invoice statuses available."
-                    />
+              {loading ? (
+                <tr><td colSpan={4} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>
+                  <Loader2 size={18} className="spin" style={{ verticalAlign: "middle", marginRight: 8 }} /> Loading invoice statuses…
+                </td></tr>
+              ) : listError ? (
+                <tr><td colSpan={4} style={{ padding: 40, textAlign: "center" }}>
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
+                    <div style={{ color: COLORS.textMuted, fontSize: 13.5 }}>No data available.</div>
+                    <button onClick={refresh} style={{ display: "flex", alignItems: "center", gap: 6, border: `1px solid ${COLORS.border}`, background: "#fff", borderRadius: 8, padding: "6px 14px", fontSize: 12.5, cursor: "pointer", color: COLORS.text }}>
+                      <RefreshCw size={13} /> Retry
+                    </button>
+                  </div>
+                </td></tr>
+              ) : filtered.length === 0 ? (
+                <tr><td colSpan={4} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>No data available.</td></tr>
+              ) : filtered.map((r, i) => (
+                <tr key={r.id} style={{ borderTop: `1px solid ${COLORS.border}`, background: i % 2 ? "#FAFBFD" : "#fff" }}>
+                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text, fontWeight: 600 }}>{r.code}</td>
+                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text }}>{r.name}</td>
+                  <td style={{ padding: "11px 16px" }}><StatusBadge active={r.active} /></td>
+                  <td style={{ padding: "11px 16px", textAlign: "right" }}>
+                    <div style={{ display: "inline-flex", gap: 8 }}>
+                      <button onClick={() => setPanel({ mode: "edit", data: { ...r } })} style={{ display: "inline-flex", alignItems: "center", gap: 6, background: COLORS.accentSoft, color: COLORS.accent, border: "none", borderRadius: 7, padding: "6px 11px", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
+                        <Pencil size={12} /> Edit
+                      </button>
+                      <button onClick={() => setConfirmDelete(r)} style={{ display: "inline-flex", alignItems: "center", gap: 6, background: COLORS.dangerSoft, color: COLORS.danger, border: "none", borderRadius: 7, padding: "6px 11px", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
+                        <Trash2 size={12} /> Delete
+                      </button>
+                    </div>
                   </td>
                 </tr>
-              ) : (
-                filtered.map((r, i) => (
-                  <tr
-                    key={r.guid}
-                    style={{
-                      borderTop: `1px solid ${COLORS.border}`,
-                      background: i % 2 ? "#FAFBFD" : "#fff",
-                    }}
-                  >
-                    <td
-                      style={{
-                        padding: "11px 16px",
-                        fontSize: 13.5,
-                        color: COLORS.text,
-                        fontWeight: 600,
-                      }}
-                    >
-                      {r.code}
-                    </td>
-
-                    <td
-                      style={{
-                        padding: "11px 16px",
-                        fontSize: 13.5,
-                        color: COLORS.text,
-                      }}
-                    >
-                      {r.name}
-                    </td>
-
-                    <td style={{ padding: "11px 16px" }}>
-                      <StatusBadge active={r.active} />
-                    </td>
-
-                    <td
-                      style={{
-                        padding: "11px 16px",
-                        textAlign: "right",
-                      }}
-                    >
-                      <div
-                        style={{
-                          display: "inline-flex",
-                          gap: 8,
-                        }}
-                      >
-                        <button
-                          onClick={() =>
-                            setPanel({
-                              mode: "edit",
-                              data: { ...r },
-                            })
-                          }
-                          style={{
-                            display: "inline-flex",
-                            alignItems: "center",
-                            gap: 6,
-                            background: COLORS.accentSoft,
-                            color: COLORS.accent,
-                            border: "none",
-                            borderRadius: 7,
-                            padding: "6px 11px",
-                            fontSize: 12.5,
-                            fontWeight: 600,
-                            cursor: "pointer",
-                          }}
-                        >
-                          <Pencil size={12} />
-                          Edit
-                        </button>
-
-                        <button
-                          onClick={() => setConfirmDelete(r)}
-                          style={{
-                            display: "inline-flex",
-                            alignItems: "center",
-                            gap: 6,
-                            background: COLORS.dangerSoft,
-                            color: COLORS.danger,
-                            border: "none",
-                            borderRadius: 7,
-                            padding: "6px 11px",
-                            fontSize: 12.5,
-                            fontWeight: 600,
-                            cursor: "pointer",
-                          }}
-                        >
-                          <Trash2 size={12} />
-                          Delete
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))
-              )}
+              ))}
             </tbody>
           </table>
         </div>
       </div>
 
       {panel && (
-        <InvoiceStatusPanel
-          mode={panel.mode}
-          data={panel.data}
-          saving={saving}
-          error={err}
-          onCancel={() => {
-            setPanel(null);
-            setErr("");
-          }}
-          onSubmit={submitPanel}
-        />
+        <InvoiceStatusPanel mode={panel.mode} data={panel.data} saving={saving} error={err} onCancel={() => { setPanel(null); setErr(""); }} onSubmit={submitPanel} />
       )}
 
       {confirmDelete && (
-        <ConfirmModal
-          title="Delete this invoice status?"
-          message={`"${confirmDelete.name}" (${confirmDelete.code}) will be permanently removed from local storage. This can't be undone.`}
-          confirmLabel="Delete"
-          busy={deleting}
-          onCancel={() => setConfirmDelete(null)}
-          onConfirm={confirmDeleteRow}
-        />
+        <ConfirmModal title="Delete this invoice status?" message={`"${confirmDelete.name}" (${confirmDelete.code}) will be permanently removed. This can't be undone.`} confirmLabel="Delete" busy={deleting} onCancel={() => setConfirmDelete(null)} onConfirm={confirmDeleteRow} />
       )}
 
       {toast && (
-        <div
-          style={{
-            position: "absolute",
-            bottom: 22,
-            left: "50%",
-            transform: "translateX(-50%)",
-            background: COLORS.text,
-            color: "#fff",
-            padding: "10px 18px",
-            borderRadius: 9,
-            fontSize: 13,
-            fontWeight: 600,
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            boxShadow: "0 12px 30px rgba(0,0,0,0.2)",
-          }}
-        >
-          <CheckCircle2 size={15} color={COLORS.success} />
-          {toast}
+        <div style={{ position: "absolute", bottom: 22, left: "50%", transform: "translateX(-50%)", background: COLORS.text, color: "#fff", padding: "10px 18px", borderRadius: 9, fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", gap: 8, boxShadow: "0 12px 30px rgba(0,0,0,0.2)" }}>
+          <CheckCircle2 size={15} color={COLORS.success} /> {toast}
         </div>
       )}
     </div>
   );
 }
+
 
 function LinkInvoicePage() {
   const [rows, setRows] = useState(() => {
@@ -3391,14 +3005,19 @@ function LinkInvoicePanel({ mode, data, saving, error, onCancel, onSubmit }) {
 /* ============================================================
    PIPELINE PROJECT (Transaction) — localStorage only
    ============================================================ */
+/* ============================================================
+   PIPELINE PROJECT — pre-sales deal pipeline, entity=
+   "PipelineProject". Client, Stage (DealStatus) and Owner (User)
+   are FK dropdowns sourced from their own LIST calls, same
+   pattern as ClientPage's Country dropdown / UserRolesPage's
+   User+Role dropdowns.
+   ============================================================ */
 function PipelineProjectPage() {
-  const [rows, setRows] = useState(() => {
-    const existing = lsGet(LS_PIPELINE_PROJECTS, null);
-    if (existing) return existing;
-    const seeded = seedPipelineProjects();
-    lsSet(LS_PIPELINE_PROJECTS, seeded);
-    return seeded;
-  });
+  const [rows, setRows] = useState([]);
+  const [clients, setClients] = useState([]);
+  const [dealStatuses, setDealStatuses] = useState([]);
+  const [users, setUsers] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [panel, setPanel] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -3406,45 +3025,86 @@ function PipelineProjectPage() {
   const [toast, setToast] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [deleting, setDeleting] = useState(false);
+  const [listError, setListError] = useState("");
 
-  useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(""), 2600); return () => clearTimeout(t); }, [toast]);
+  const refresh = useCallback(() => {
+    setLoading(true);
+    setListError("");
+    callPipelineProjectFlow("LIST").then((res) => {
+      setRows(res.data);
+      setLoading(false);
+    }).catch((e) => {
+      setListError(e.message);
+      setLoading(false);
+    });
+  }, []);
+
+  useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => { callClientFlow("LIST").then((res) => setClients(res.data)); }, []);
+  useEffect(() => { callDealStatusFlow("LIST").then((res) => setDealStatuses(res.data)); }, []);
+  useEffect(() => { callUserFlow("LIST").then((res) => setUsers(res.data)); }, []);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(""), 2600);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  const clientName = (id) => clients.find((c) => String(c.id) === String(id))?.name || "—";
+  const stageName = (id) => dealStatuses.find((d) => String(d.id) === String(id))?.name || "—";
+  const ownerName = (id) => {
+    const u = users.find((x) => String(x.id) === String(id));
+    return u ? `${u.firstName} ${u.lastName}` : "—";
+  };
 
   const filtered = rows.filter((r) =>
     (r.projectName || "").toLowerCase().includes(search.toLowerCase()) ||
-    (r.client || "").toLowerCase().includes(search.toLowerCase())
+    clientName(r.clientId).toLowerCase().includes(search.toLowerCase())
   );
 
   const kpis = [
     { label: "Pipeline Projects", value: String(rows.length), icon: Handshake, color: "#8B5CF6" },
-    { label: "Negotiation", value: String(rows.filter((r) => r.stage === "Negotiation").length), icon: CheckCircle2, color: COLORS.success },
-    { label: "Proposal", value: String(rows.filter((r) => r.stage === "Proposal").length), icon: AlertCircle, color: "#F59E0B" },
+    { label: "Total Deal Value", value: formatINR(rows.reduce((s, r) => s + Number(r.dealValue || 0), 0)), icon: DollarSign, color: COLORS.success },
+    { label: "Active", value: String(rows.filter((r) => r.active).length), icon: CheckCircle2, color: "#F59E0B" },
   ];
 
-  const refresh = () => setRows(lsGet(LS_PIPELINE_PROJECTS, []));
-
   const submitPanel = (form) => {
-    if (!form.projectName?.trim() || !form.client?.trim()) {
+    if (!form.projectName?.trim() || !form.clientId) {
       setErr("Project Name and Client are required.");
       return;
     }
-    setSaving(true); setErr("");
-    const updated = form.guid
-      ? rows.map((r) => r.guid === form.guid ? { ...r, ...form } : r)
-      : [...rows, { ...form, guid: `pp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` }];
-    lsSet(LS_PIPELINE_PROJECTS, updated);
-    setRows(updated); setSaving(false); setPanel(null);
-    logAudit("Pipeline Project", form.guid ? "Update" : "Create", form.projectName);
-    setToast(form.guid ? "Pipeline project updated." : "Pipeline project added.");
+    setSaving(true);
+    setErr("");
+    const action = form.guid ? "EDIT" : "CREATE";
+    callPipelineProjectFlow(action, form)
+      .then((res) => {
+        setRows(res.data);
+        setSaving(false);
+        setPanel(null);
+        logAudit("Pipeline Project", form.guid ? "Update" : "Create", form.projectName);
+        setToast(form.guid ? "Pipeline project updated." : "Pipeline project added.");
+      })
+      .catch((e) => {
+        setSaving(false);
+        setErr(e.message);
+      });
   };
 
   const confirmDeleteRow = () => {
     if (!confirmDelete) return;
     setDeleting(true);
-    const updated = rows.filter((r) => r.guid !== confirmDelete.guid);
-    lsSet(LS_PIPELINE_PROJECTS, updated);
-    setRows(updated); setDeleting(false); setConfirmDelete(null);
-    logAudit("Pipeline Project", "Delete", confirmDelete.projectName);
-    setToast("Pipeline project deleted.");
+    callPipelineProjectFlow("DELETE", confirmDelete)
+      .then((res) => {
+        setRows(res.data);
+        setDeleting(false);
+        setConfirmDelete(null);
+        logAudit("Pipeline Project", "Delete", confirmDelete.projectName);
+        setToast("Pipeline project deleted.");
+      })
+      .catch((e) => {
+        setDeleting(false);
+        setToast(`Delete failed: ${e.message}`);
+      });
   };
 
   return (
@@ -3453,10 +3113,10 @@ function PipelineProjectPage() {
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 18 }}>
           <div>
             <div style={{ fontFamily: "Sora, sans-serif", fontSize: 20, fontWeight: 700, color: COLORS.text }}>Pipeline Project</div>
-            <div style={{ color: COLORS.textMuted, fontSize: 13.5 }}>Track deals in the sales pipeline (stored locally — not yet on SQL)</div>
+            <div style={{ color: COLORS.textMuted, fontSize: 13.5 }}>Track deals in the sales pipeline</div>
           </div>
           <button
-            onClick={() => setPanel({ mode: "add", data: { guid: "", projectName: "", client: "", dealValue: "", stage: "Proposal", expectedCloseDate: "", owner: "" } })}
+            onClick={() => setPanel({ mode: "add", data: { guid: "", projectName: "", clientId: "", dealValue: "", dealStatusId: "", expectedCloseDate: "", ownerUserId: "", active: true } })}
             style={{ display: "flex", alignItems: "center", gap: 7, background: COLORS.accent, color: "#fff", border: "none", borderRadius: 9, padding: "10px 16px", fontSize: 13.5, fontWeight: 700, cursor: "pointer" }}
           >
             <Plus size={15} /> Add Pipeline Project
@@ -3487,7 +3147,7 @@ function PipelineProjectPage() {
                 <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by project or client" style={{ border: "none", outline: "none", fontSize: 13, width: "100%", fontFamily: "Inter, sans-serif" }} />
               </div>
               <button onClick={refresh} style={{ display: "flex", alignItems: "center", gap: 6, border: `1px solid ${COLORS.border}`, background: "#fff", borderRadius: 8, padding: "0 12px", fontSize: 12.5, cursor: "pointer", color: COLORS.text }}>
-                <RefreshCw size={13} /> Refresh
+                <RefreshCw size={13} className={loading ? "spin" : ""} /> Refresh
               </button>
             </div>
           </div>
@@ -3495,22 +3155,36 @@ function PipelineProjectPage() {
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ background: COLORS.bg }}>
-                {["Project", "Client", "Deal Value", "Stage", "Expected Close", "Owner","Actions"].map((h) => (
+                {["Project", "Client", "Deal Value", "Stage", "Expected Close", "Owner", "Status", "Actions"].map((h) => (
                   <th key={h} style={{ textAlign: h === "Actions" ? "right" : "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {filtered.length === 0 ? (
-                <tr><td colSpan={7}><EmptyState icon={Handshake} message="No pipeline projects available." /></td></tr>
+              {loading ? (
+                <tr><td colSpan={8} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>
+                  <Loader2 size={18} className="spin" style={{ verticalAlign: "middle", marginRight: 8 }} /> Loading pipeline…
+                </td></tr>
+              ) : listError ? (
+                <tr><td colSpan={8} style={{ padding: 40, textAlign: "center" }}>
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
+                    <div style={{ color: COLORS.textMuted, fontSize: 13.5 }}>No data available.</div>
+                    <button onClick={refresh} style={{ display: "flex", alignItems: "center", gap: 6, border: `1px solid ${COLORS.border}`, background: "#fff", borderRadius: 8, padding: "6px 14px", fontSize: 12.5, cursor: "pointer", color: COLORS.text }}>
+                      <RefreshCw size={13} /> Retry
+                    </button>
+                  </div>
+                </td></tr>
+              ) : filtered.length === 0 ? (
+                <tr><td colSpan={8}><EmptyState icon={Handshake} message="No pipeline projects available." /></td></tr>
               ) : filtered.map((r, i) => (
-                <tr key={r.guid} style={{ borderTop: `1px solid ${COLORS.border}`, background: i % 2 ? "#FAFBFD" : "#fff" }}>
+                <tr key={r.id} style={{ borderTop: `1px solid ${COLORS.border}`, background: i % 2 ? "#FAFBFD" : "#fff" }}>
                   <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text, fontWeight: 600 }}>{r.projectName}</td>
-                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text }}>{r.client}</td>
-                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text }}>{r.dealValue}</td>
-                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text }}>{r.stage}</td>
-                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text }}>{r.expectedCloseDate}</td>
-                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text }}>{r.owner}</td>
+                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text }}>{clientName(r.clientId)}</td>
+                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text }}>{formatINR(r.dealValue)}</td>
+                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text }}>{stageName(r.dealStatusId)}</td>
+                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text }}>{r.expectedCloseDate || "—"}</td>
+                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text }}>{ownerName(r.ownerUserId)}</td>
+                  <td style={{ padding: "11px 16px" }}><StatusBadge active={r.active} /></td>
                   <td style={{ padding: "11px 16px", textAlign: "right" }}>
                     <div style={{ display: "inline-flex", gap: 8 }}>
                       <button onClick={() => setPanel({ mode: "edit", data: { ...r } })} style={{ display: "inline-flex", alignItems: "center", gap: 6, background: COLORS.accentSoft, color: COLORS.accent, border: "none", borderRadius: 7, padding: "6px 11px", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
@@ -3529,11 +3203,11 @@ function PipelineProjectPage() {
       </div>
 
       {panel && (
-        <PipelineProjectPanel mode={panel.mode} data={panel.data} saving={saving} error={err} onCancel={() => { setPanel(null); setErr(""); }} onSubmit={submitPanel} />
+        <PipelineProjectPanel mode={panel.mode} data={panel.data} clients={clients} dealStatuses={dealStatuses} users={users} saving={saving} error={err} onCancel={() => { setPanel(null); setErr(""); }} onSubmit={submitPanel} />
       )}
 
       {confirmDelete && (
-        <ConfirmModal title="Delete this pipeline project?" message={`"${confirmDelete.projectName}" will be permanently removed from local storage. This can't be undone.`} confirmLabel="Delete" busy={deleting} onCancel={() => setConfirmDelete(null)} onConfirm={confirmDeleteRow} />
+        <ConfirmModal title="Delete this pipeline project?" message={`"${confirmDelete.projectName}" will be permanently removed. This can't be undone.`} confirmLabel="Delete" busy={deleting} onCancel={() => setConfirmDelete(null)} onConfirm={confirmDeleteRow} />
       )}
 
       {toast && (
@@ -3545,12 +3219,12 @@ function PipelineProjectPage() {
   );
 }
 
-function PipelineProjectPanel({ mode, data, saving, error, onCancel, onSubmit }) {
+function PipelineProjectPanel({ mode, data, clients, dealStatuses, users, saving, error, onCancel, onSubmit }) {
   const [form, setForm] = useState(data);
   useEffect(() => setForm(data), [data]);
 
   return (
-    <div style={{ width: 340, background: COLORS.card, borderLeft: `1px solid ${COLORS.border}`, flexShrink: 0, display: "flex", flexDirection: "column", boxShadow: "-8px 0 30px rgba(15,20,40,0.06)" }}>
+    <div style={{ width: 360, background: COLORS.card, borderLeft: `1px solid ${COLORS.border}`, flexShrink: 0, display: "flex", flexDirection: "column", boxShadow: "-8px 0 30px rgba(15,20,40,0.06)" }}>
       <div style={{ padding: "18px 20px", borderBottom: `1px solid ${COLORS.border}`, display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
         <div>
           <div style={{ fontWeight: 700, fontSize: 15, color: COLORS.text }}>{mode === "add" ? "Add Pipeline Project" : "Edit Pipeline Project"}</div>
@@ -3561,22 +3235,38 @@ function PipelineProjectPanel({ mode, data, saving, error, onCancel, onSubmit })
       <div style={{ padding: 20, flex: 1, overflowY: "auto" }}>
         <label style={labelStyle}>Project Name*</label>
         <input value={form.projectName} onChange={(e) => setForm({ ...form, projectName: e.target.value })} placeholder="e.g. Retail Analytics Suite" style={inputStyle} />
+
         <label style={{ ...labelStyle, marginTop: 16 }}>Client*</label>
-        <input value={form.client} onChange={(e) => setForm({ ...form, client: e.target.value })} placeholder="e.g. Northwind" style={inputStyle} />
-        <label style={{ ...labelStyle, marginTop: 16 }}>Deal Value</label>
-        <input value={form.dealValue} onChange={(e) => setForm({ ...form, dealValue: e.target.value })} placeholder="e.g. ₹32,00,000" style={inputStyle} />
-        <label style={{ ...labelStyle, marginTop: 16 }}>Stage</label>
-        <select value={form.stage} onChange={(e) => setForm({ ...form, stage: e.target.value })} style={inputStyle}>
-          <option value="Prospecting">Prospecting</option>
-          <option value="Proposal">Proposal</option>
-          <option value="Negotiation">Negotiation</option>
-          <option value="Won">Won</option>
-          <option value="Lost">Lost</option>
+        <select value={form.clientId || ""} onChange={(e) => setForm({ ...form, clientId: e.target.value })} style={inputStyle}>
+          <option value="">Select client</option>
+          {clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
+
+        <label style={{ ...labelStyle, marginTop: 16 }}>Deal Value</label>
+        <input type="number" value={form.dealValue} onChange={(e) => setForm({ ...form, dealValue: e.target.value })} placeholder="e.g. 3200000" style={inputStyle} />
+
+        <label style={{ ...labelStyle, marginTop: 16 }}>Stage</label>
+        <select value={form.dealStatusId || ""} onChange={(e) => setForm({ ...form, dealStatusId: e.target.value })} style={inputStyle}>
+          <option value="">Select stage</option>
+          {dealStatuses.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+        </select>
+
         <label style={{ ...labelStyle, marginTop: 16 }}>Expected Close Date</label>
         <input type="date" value={form.expectedCloseDate} onChange={(e) => setForm({ ...form, expectedCloseDate: e.target.value })} style={inputStyle} />
+
         <label style={{ ...labelStyle, marginTop: 16 }}>Owner</label>
-        <input value={form.owner} onChange={(e) => setForm({ ...form, owner: e.target.value })} placeholder="e.g. Karan Mehta" style={inputStyle} />
+        <select value={form.ownerUserId || ""} onChange={(e) => setForm({ ...form, ownerUserId: e.target.value })} style={inputStyle}>
+          <option value="">Select owner</option>
+          {users.map((u) => <option key={u.id} value={u.id}>{u.firstName} {u.lastName}</option>)}
+        </select>
+
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 20, padding: "12px 14px", border: `1px solid ${COLORS.border}`, borderRadius: 10 }}>
+          <span style={{ fontSize: 13.5, fontWeight: 600, color: COLORS.text }}>Active</span>
+          <div onClick={() => setForm({ ...form, active: !form.active })} style={{ width: 40, height: 22, borderRadius: 999, background: form.active ? COLORS.accent : "#D7DCE6", position: "relative", cursor: "pointer", transition: "background 0.15s" }}>
+            <div style={{ width: 18, height: 18, borderRadius: "50%", background: "#fff", position: "absolute", top: 2, left: form.active ? 20 : 2, transition: "left 0.15s", boxShadow: "0 1px 3px rgba(0,0,0,0.25)" }} />
+          </div>
+        </div>
+
         {error && <div style={{ display: "flex", gap: 8, alignItems: "center", color: COLORS.danger, fontSize: 12.5, marginTop: 16 }}><AlertCircle size={14} /> {error}</div>}
       </div>
       <div style={{ padding: 16, borderTop: `1px solid ${COLORS.border}`, display: "flex", gap: 10, justifyContent: "flex-end" }}>
@@ -3591,16 +3281,17 @@ function PipelineProjectPanel({ mode, data, saving, error, onCancel, onSubmit })
 }
 
 /* ============================================================
-   PROJECT RESOURCES (Transaction) — localStorage only
+   PROJECT RESOURCES (Transaction) — history/log of resource
+   assignments, entity="ProjectResourceTxn". Project, Resource
+   (User) and Role are FK dropdowns, same pattern as
+   PipelineProjectPage's Client/Stage/Owner dropdowns.
    ============================================================ */
 function ProjectResourcesTxnPage() {
-  const [rows, setRows] = useState(() => {
-    const existing = lsGet(LS_PROJECT_RESOURCES_TXN, null);
-    if (existing) return existing;
-    const seeded = seedProjectResourcesTxn();
-    lsSet(LS_PROJECT_RESOURCES_TXN, seeded);
-    return seeded;
-  });
+  const [rows, setRows] = useState([]);
+  const [projects, setProjects] = useState([]);
+  const [users, setUsers] = useState([]);
+  const [roles, setRoles] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [panel, setPanel] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -3608,44 +3299,86 @@ function ProjectResourcesTxnPage() {
   const [toast, setToast] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [deleting, setDeleting] = useState(false);
+  const [listError, setListError] = useState("");
 
-  useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(""), 2600); return () => clearTimeout(t); }, [toast]);
+  const refresh = useCallback(() => {
+    setLoading(true);
+    setListError("");
+    callProjectResourceTxnFlow("LIST").then((res) => {
+      setRows(res.data);
+      setLoading(false);
+    }).catch((e) => {
+      setListError(e.message);
+      setLoading(false);
+    });
+  }, []);
+
+  useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => { callProjectFlow("LIST").then((res) => setProjects(res.data)); }, []);
+  useEffect(() => { callUserFlow("LIST").then((res) => setUsers(res.data)); }, []);
+  useEffect(() => { callRoleFlow("LIST").then((res) => setRoles(res.data)); }, []);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(""), 2600);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  const projectName = (id) => projects.find((p) => String(p.id) === String(id))?.projectName || "—";
+  const userName = (id) => {
+    const u = users.find((x) => String(x.id) === String(id));
+    return u ? `${u.firstName} ${u.lastName}` : "—";
+  };
+  const roleName = (id) => roles.find((r) => String(r.id) === String(id))?.name || "—";
 
   const filtered = rows.filter((r) =>
-    (r.resourceName || "").toLowerCase().includes(search.toLowerCase()) ||
-    (r.project || "").toLowerCase().includes(search.toLowerCase())
+    userName(r.userId).toLowerCase().includes(search.toLowerCase()) ||
+    projectName(r.projectId).toLowerCase().includes(search.toLowerCase())
   );
 
   const kpis = [
     { label: "Total Assignments", value: String(rows.length), icon: Users2, color: "#22A06B" },
     { label: "Avg Allocation %", value: rows.length ? String(Math.round(rows.reduce((s, r) => s + Number(r.allocationPct || 0), 0) / rows.length)) : "0", icon: CheckCircle2, color: COLORS.success },
+    { label: "Active", value: String(rows.filter((r) => r.active).length), icon: AlertCircle, color: "#F59E0B" },
   ];
 
-  const refresh = () => setRows(lsGet(LS_PROJECT_RESOURCES_TXN, []));
-
   const submitPanel = (form) => {
-    if (!form.resourceName?.trim() || !form.project?.trim()) {
-      setErr("Resource Name and Project are required.");
+    if (!form.userId || !form.projectId) {
+      setErr("Resource and Project are required.");
       return;
     }
-    setSaving(true); setErr("");
-    const updated = form.guid
-      ? rows.map((r) => r.guid === form.guid ? { ...r, ...form } : r)
-      : [...rows, { ...form, guid: `prt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` }];
-    lsSet(LS_PROJECT_RESOURCES_TXN, updated);
-    setRows(updated); setSaving(false); setPanel(null);
-    logAudit("Project Resources", form.guid ? "Update" : "Create", `${form.resourceName} — ${form.project}`);
-    setToast(form.guid ? "Resource assignment updated." : "Resource assignment added.");
+    setSaving(true);
+    setErr("");
+    const action = form.guid ? "EDIT" : "CREATE";
+    callProjectResourceTxnFlow(action, form)
+      .then((res) => {
+        setRows(res.data);
+        setSaving(false);
+        setPanel(null);
+        logAudit("Project Resources", form.guid ? "Update" : "Create", `${userName(form.userId)} — ${projectName(form.projectId)}`);
+        setToast(form.guid ? "Resource assignment updated." : "Resource assignment added.");
+      })
+      .catch((e) => {
+        setSaving(false);
+        setErr(e.message);
+      });
   };
 
   const confirmDeleteRow = () => {
     if (!confirmDelete) return;
     setDeleting(true);
-    const updated = rows.filter((r) => r.guid !== confirmDelete.guid);
-    lsSet(LS_PROJECT_RESOURCES_TXN, updated);
-    setRows(updated); setDeleting(false); setConfirmDelete(null);
-    logAudit("Project Resources", "Delete", `${confirmDelete.resourceName} — ${confirmDelete.project}`);
-    setToast("Resource assignment deleted.");
+    callProjectResourceTxnFlow("DELETE", confirmDelete)
+      .then((res) => {
+        setRows(res.data);
+        setDeleting(false);
+        setConfirmDelete(null);
+        logAudit("Project Resources", "Delete", `${userName(confirmDelete.userId)} — ${projectName(confirmDelete.projectId)}`);
+        setToast("Resource assignment deleted.");
+      })
+      .catch((e) => {
+        setDeleting(false);
+        setToast(`Delete failed: ${e.message}`);
+      });
   };
 
   return (
@@ -3654,10 +3387,10 @@ function ProjectResourcesTxnPage() {
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 18 }}>
           <div>
             <div style={{ fontFamily: "Sora, sans-serif", fontSize: 20, fontWeight: 700, color: COLORS.text }}>Project Resources</div>
-            <div style={{ color: COLORS.textMuted, fontSize: 13.5 }}>Resource-to-project assignment transactions (stored locally — not yet on SQL)</div>
+            <div style={{ color: COLORS.textMuted, fontSize: 13.5 }}>Resource-to-project assignment history</div>
           </div>
           <button
-            onClick={() => setPanel({ mode: "add", data: { guid: "", resourceName: "", project: "", role: "", startDate: "", endDate: "", allocationPct: 100 } })}
+            onClick={() => setPanel({ mode: "add", data: { guid: "", projectId: "", userId: "", roleId: "", startDate: "", endDate: "", allocationPct: 100, active: true } })}
             style={{ display: "flex", alignItems: "center", gap: 7, background: COLORS.accent, color: "#fff", border: "none", borderRadius: 9, padding: "10px 16px", fontSize: 13.5, fontWeight: 700, cursor: "pointer" }}
           >
             <Plus size={15} /> Add Assignment
@@ -3688,7 +3421,7 @@ function ProjectResourcesTxnPage() {
                 <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by resource or project" style={{ border: "none", outline: "none", fontSize: 13, width: "100%", fontFamily: "Inter, sans-serif" }} />
               </div>
               <button onClick={refresh} style={{ display: "flex", alignItems: "center", gap: 6, border: `1px solid ${COLORS.border}`, background: "#fff", borderRadius: 8, padding: "0 12px", fontSize: 12.5, cursor: "pointer", color: COLORS.text }}>
-                <RefreshCw size={13} /> Refresh
+                <RefreshCw size={13} className={loading ? "spin" : ""} /> Refresh
               </button>
             </div>
           </div>
@@ -3696,22 +3429,36 @@ function ProjectResourcesTxnPage() {
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ background: COLORS.bg }}>
-                {["Resource", "Project", "Role", "Start Date", "End Date", "Allocation %","Actions"].map((h) => (
+                {["Resource", "Project", "Role", "Start Date", "End Date", "Allocation %", "Status", "Actions"].map((h) => (
                   <th key={h} style={{ textAlign: h === "Actions" ? "right" : "left", padding: "10px 16px", fontSize: 12, color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {filtered.length === 0 ? (
-                <tr><td colSpan={7}><EmptyState icon={Users2} message="No resource assignments available." /></td></tr>
+              {loading ? (
+                <tr><td colSpan={8} style={{ padding: 40, textAlign: "center", color: COLORS.textMuted }}>
+                  <Loader2 size={18} className="spin" style={{ verticalAlign: "middle", marginRight: 8 }} /> Loading assignments…
+                </td></tr>
+              ) : listError ? (
+                <tr><td colSpan={8} style={{ padding: 40, textAlign: "center" }}>
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
+                    <div style={{ color: COLORS.textMuted, fontSize: 13.5 }}>No data available.</div>
+                    <button onClick={refresh} style={{ display: "flex", alignItems: "center", gap: 6, border: `1px solid ${COLORS.border}`, background: "#fff", borderRadius: 8, padding: "6px 14px", fontSize: 12.5, cursor: "pointer", color: COLORS.text }}>
+                      <RefreshCw size={13} /> Retry
+                    </button>
+                  </div>
+                </td></tr>
+              ) : filtered.length === 0 ? (
+                <tr><td colSpan={8}><EmptyState icon={Users2} message="No resource assignments available." /></td></tr>
               ) : filtered.map((r, i) => (
-                <tr key={r.guid} style={{ borderTop: `1px solid ${COLORS.border}`, background: i % 2 ? "#FAFBFD" : "#fff" }}>
-                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text, fontWeight: 600 }}>{r.resourceName}</td>
-                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text }}>{r.project}</td>
-                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text }}>{r.role}</td>
-                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text }}>{r.startDate}</td>
-                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text }}>{r.endDate}</td>
+                <tr key={r.id} style={{ borderTop: `1px solid ${COLORS.border}`, background: i % 2 ? "#FAFBFD" : "#fff" }}>
+                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text, fontWeight: 600 }}>{userName(r.userId)}</td>
+                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text }}>{projectName(r.projectId)}</td>
+                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text }}>{roleName(r.roleId)}</td>
+                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text }}>{r.startDate || "—"}</td>
+                  <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text }}>{r.endDate || "—"}</td>
                   <td style={{ padding: "11px 16px", fontSize: 13.5, color: COLORS.text }}>{r.allocationPct}%</td>
+                  <td style={{ padding: "11px 16px" }}><StatusBadge active={r.active} /></td>
                   <td style={{ padding: "11px 16px", textAlign: "right" }}>
                     <div style={{ display: "inline-flex", gap: 8 }}>
                       <button onClick={() => setPanel({ mode: "edit", data: { ...r } })} style={{ display: "inline-flex", alignItems: "center", gap: 6, background: COLORS.accentSoft, color: COLORS.accent, border: "none", borderRadius: 7, padding: "6px 11px", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
@@ -3730,11 +3477,11 @@ function ProjectResourcesTxnPage() {
       </div>
 
       {panel && (
-        <ProjectResourcesTxnPanel mode={panel.mode} data={panel.data} saving={saving} error={err} onCancel={() => { setPanel(null); setErr(""); }} onSubmit={submitPanel} />
+        <ProjectResourcesTxnPanel mode={panel.mode} data={panel.data} projects={projects} users={users} roles={roles} saving={saving} error={err} onCancel={() => { setPanel(null); setErr(""); }} onSubmit={submitPanel} />
       )}
 
       {confirmDelete && (
-        <ConfirmModal title="Delete this assignment?" message={`"${confirmDelete.resourceName}" on "${confirmDelete.project}" will be permanently removed. This can't be undone.`} confirmLabel="Delete" busy={deleting} onCancel={() => setConfirmDelete(null)} onConfirm={confirmDeleteRow} />
+        <ConfirmModal title="Delete this assignment?" message={`"${userName(confirmDelete.userId)}" on "${projectName(confirmDelete.projectId)}" will be permanently removed. This can't be undone.`} confirmLabel="Delete" busy={deleting} onCancel={() => setConfirmDelete(null)} onConfirm={confirmDeleteRow} />
       )}
 
       {toast && (
@@ -3746,12 +3493,12 @@ function ProjectResourcesTxnPage() {
   );
 }
 
-function ProjectResourcesTxnPanel({ mode, data, saving, error, onCancel, onSubmit }) {
+function ProjectResourcesTxnPanel({ mode, data, projects, users, roles, saving, error, onCancel, onSubmit }) {
   const [form, setForm] = useState(data);
   useEffect(() => setForm(data), [data]);
 
   return (
-    <div style={{ width: 340, background: COLORS.card, borderLeft: `1px solid ${COLORS.border}`, flexShrink: 0, display: "flex", flexDirection: "column", boxShadow: "-8px 0 30px rgba(15,20,40,0.06)" }}>
+    <div style={{ width: 360, background: COLORS.card, borderLeft: `1px solid ${COLORS.border}`, flexShrink: 0, display: "flex", flexDirection: "column", boxShadow: "-8px 0 30px rgba(15,20,40,0.06)" }}>
       <div style={{ padding: "18px 20px", borderBottom: `1px solid ${COLORS.border}`, display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
         <div>
           <div style={{ fontWeight: 700, fontSize: 15, color: COLORS.text }}>{mode === "add" ? "Add Resource Assignment" : "Edit Resource Assignment"}</div>
@@ -3760,18 +3507,40 @@ function ProjectResourcesTxnPanel({ mode, data, saving, error, onCancel, onSubmi
         <button onClick={onCancel} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.textMuted }}><X size={18} /></button>
       </div>
       <div style={{ padding: 20, flex: 1, overflowY: "auto" }}>
-        <label style={labelStyle}>Resource Name*</label>
-        <input value={form.resourceName} onChange={(e) => setForm({ ...form, resourceName: e.target.value })} placeholder="e.g. Aditi Rao" style={inputStyle} />
+        <label style={labelStyle}>Resource (User)*</label>
+        <select value={form.userId || ""} onChange={(e) => setForm({ ...form, userId: e.target.value })} style={inputStyle}>
+          <option value="">Select resource</option>
+          {users.map((u) => <option key={u.id} value={u.id}>{u.firstName} {u.lastName}</option>)}
+        </select>
+
         <label style={{ ...labelStyle, marginTop: 16 }}>Project*</label>
-        <input value={form.project} onChange={(e) => setForm({ ...form, project: e.target.value })} placeholder="e.g. Devoir Portal Revamp" style={inputStyle} />
+        <select value={form.projectId || ""} onChange={(e) => setForm({ ...form, projectId: e.target.value })} style={inputStyle}>
+          <option value="">Select project</option>
+          {projects.map((p) => <option key={p.id} value={p.id}>{p.projectName}</option>)}
+        </select>
+
         <label style={{ ...labelStyle, marginTop: 16 }}>Role</label>
-        <input value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })} placeholder="e.g. Developer" style={inputStyle} />
+        <select value={form.roleId || ""} onChange={(e) => setForm({ ...form, roleId: e.target.value })} style={inputStyle}>
+          <option value="">Select role</option>
+          {roles.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+        </select>
+
         <label style={{ ...labelStyle, marginTop: 16 }}>Start Date</label>
         <input type="date" value={form.startDate} onChange={(e) => setForm({ ...form, startDate: e.target.value })} style={inputStyle} />
+
         <label style={{ ...labelStyle, marginTop: 16 }}>End Date</label>
         <input type="date" value={form.endDate} onChange={(e) => setForm({ ...form, endDate: e.target.value })} style={inputStyle} />
+
         <label style={{ ...labelStyle, marginTop: 16 }}>Allocation %</label>
         <input type="number" min="0" max="100" value={form.allocationPct} onChange={(e) => setForm({ ...form, allocationPct: e.target.value })} placeholder="e.g. 80" style={inputStyle} />
+
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 20, padding: "12px 14px", border: `1px solid ${COLORS.border}`, borderRadius: 10 }}>
+          <span style={{ fontSize: 13.5, fontWeight: 600, color: COLORS.text }}>Active</span>
+          <div onClick={() => setForm({ ...form, active: !form.active })} style={{ width: 40, height: 22, borderRadius: 999, background: form.active ? COLORS.accent : "#D7DCE6", position: "relative", cursor: "pointer", transition: "background 0.15s" }}>
+            <div style={{ width: 18, height: 18, borderRadius: "50%", background: "#fff", position: "absolute", top: 2, left: form.active ? 20 : 2, transition: "left 0.15s", boxShadow: "0 1px 3px rgba(0,0,0,0.25)" }} />
+          </div>
+        </div>
+
         {error && <div style={{ display: "flex", gap: 8, alignItems: "center", color: COLORS.danger, fontSize: 12.5, marginTop: 16 }}><AlertCircle size={14} /> {error}</div>}
       </div>
       <div style={{ padding: 16, borderTop: `1px solid ${COLORS.border}`, display: "flex", gap: 10, justifyContent: "flex-end" }}>
@@ -3785,9 +3554,6 @@ function ProjectResourcesTxnPanel({ mode, data, saving, error, onCancel, onSubmi
   );
 }
 
-/* ============================================================
-   PROJECT DOCUMENT (Transaction) — localStorage only
-   ============================================================ */
 function ProjectDocumentPage() {
   const [rows, setRows] = useState(() => {
     const existing = lsGet(LS_PROJECT_DOCUMENTS, null);
